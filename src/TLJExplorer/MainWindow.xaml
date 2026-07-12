@@ -130,6 +130,9 @@
                 <MenuItem Header="Diagnose External Mods..." Click="DiagnoseExternalMods_Click"
                           ToolTip="Walk the current external mods folder and report which files did and did not resolve to VFS entries."/>
                 <Separator/>
+                <MenuItem Header="Locate _ffmpeg.exe..." Click="LocateFfmpeg_Click"
+                          ToolTip="Point at ffmpeg.exe (from a &quot;shared&quot; build) so the app can transcode Bink/Smacker videos for playback."/>
+                <Separator/>
                 <MenuItem Header="_Theme">
                     <MenuItem x:Name="ThemeSystemMenuItem" Header="_System" IsCheckable="True" Tag="System" Click="Theme_Click"/>
                     <MenuItem x:Name="ThemeLightMenuItem" Header="_Light" IsCheckable="True" Tag="Light" Click="Theme_Click"/>
@@ -164,7 +167,7 @@
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <DockPanel Grid.Column="0">
+            <DockPanel Grid.Column="0" Margin="8,4,4,0">
                 <StackPanel DockPanel.Dock="Top" Margin="0,0,0,6">
                     <ComboBox x:Name="TypeFilterCombo" Margin="0,0,0,4"
                               SelectionChanged="TreeFilter_Changed">
