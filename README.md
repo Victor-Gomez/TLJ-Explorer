@@ -4,6 +4,8 @@ A Windows viewer for the game assets of **The Longest Journey** (2000). Browse a
 file tree and preview its images, textures, sounds, videos, 3D models and animations, XRC resource
 trees, and static composites of individual rooms.
 
+![TLJ Explorer screenshot](docs/screenshot.avif)
+
 ## Features
 
 - **Full-install browsing.** Reads `.xarc` archives recursively, grafts the friendly names and
