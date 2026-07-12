@@ -28,8 +28,12 @@ public partial class App : Application
 
         base.OnStartup(e);
 
-        // Report unhandled exceptions instead of silently killing the process. Log file location is
-        // Logger.LogFilePath.
+        // Report unhandled exceptions, then shut the app down. Previously this handler just set
+        // args.Handled = true, which suppresses the crash but leaves the process running in a
+        // half-broken state — combined with the GLFW window in ModelRenderer (whose foreground
+        // thread outlives WPF) that led to orphaned TLJExplorer.exe processes surviving after the
+        // main window was closed. Shutdown() runs Window.Closed handlers so GL resources dispose
+        // cleanly; Environment.Exit is the fallback if a native thread refuses to yield.
         DispatcherUnhandledException += (_, args) =>
         {
             Logger.Log($"DispatcherUnhandledException: {args.Exception}");
@@ -39,6 +43,8 @@ public partial class App : Application
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
             args.Handled = true;
+            try { Shutdown(); } catch { /* fall through to hard exit */ }
+            Dispatcher.BeginInvoke(new Action(() => Environment.Exit(1)), DispatcherPriority.ApplicationIdle);
         };
 
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>

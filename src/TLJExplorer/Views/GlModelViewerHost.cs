@@ -423,7 +423,9 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
 
     public void Dispose()
     {
-        UnhookCompositionRendering();
+        // Guard the composition unhook so any failure there can't skip renderer disposal — the
+        // renderer owns a hidden GLFW window whose thread will keep the process alive if leaked.
+        try { UnhookCompositionRendering(); } catch { }
         _renderer.Dispose();
     }
 }
