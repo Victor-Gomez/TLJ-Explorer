@@ -1819,9 +1819,6 @@ public partial class MainWindow : Window
         ImageCompareSideMod.Width = _compareCanvasWidth; ImageCompareSideMod.Height = _compareCanvasHeight;
 
         _compareWipeX = _compareCanvasWidth / 2.0;
-        // Setting the slider raises ValueChanged which calls UpdateCompareClip; force a value that fires
-        // even when it happens to already be 0.5 by cycling once through a bracket.
-        ImageCompareWipeSlider.Value = 0.5;
         SetCompareZoom(1.0);
         UpdateCompareClip();
 
@@ -1831,6 +1828,8 @@ public partial class MainWindow : Window
         ImageComparePanel.Visibility = Visibility.Visible;
         ApplyImageCompareMode();
     }
+
+    private const double CompareDividerHandleWidth = 14.0;
 
     private void UpdateCompareClip()
     {
@@ -1844,6 +1843,10 @@ public partial class MainWindow : Window
         ImageCompareClip.Rect = new Rect(x, 0, _compareCanvasWidth - x, _compareCanvasHeight);
         ImageCompareDivider.Margin = new Thickness(x - 1, 0, 0, 0);
         ImageCompareDivider.Height = _compareCanvasHeight;
+        // Wider transparent hit-area centred over the visible bar so a few pixels either side are still
+        // grabbable — a 2-px bar is too skinny to reliably click.
+        ImageCompareDividerHandle.Margin = new Thickness(x - (CompareDividerHandleWidth / 2), 0, 0, 0);
+        ImageCompareDividerHandle.Height = _compareCanvasHeight;
     }
 
     private void ApplyImageCompareMode()
@@ -1851,8 +1854,6 @@ public partial class MainWindow : Window
         bool wipe = ImageCompareWipeMode.IsChecked == true;
         ImageCompareWipeScroll.Visibility = wipe ? Visibility.Visible : Visibility.Collapsed;
         ImageCompareSideBySideContainer.Visibility = wipe ? Visibility.Collapsed : Visibility.Visible;
-        // The wipe slider only makes sense in wipe mode — hide it in side-by-side.
-        ImageCompareWipeSliderPanel.Visibility = wipe ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void ImageCompareMode_Changed(object sender, RoutedEventArgs e)
@@ -1861,12 +1862,33 @@ public partial class MainWindow : Window
             ApplyImageCompareMode();
     }
 
-    private void ImageCompareWipeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    // -------------------- Wipe drag (on the transparent divider handle overlay) --------------------
+
+    private bool _compareWipeDragging;
+
+    private void ImageCompareDividerHandle_MouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (_compareCanvasWidth <= 0)
-            return;
-        _compareWipeX = e.NewValue * _compareCanvasWidth;
+        _compareWipeDragging = true;
+        _compareWipeX = e.GetPosition(ImageCompareStage).X;
         UpdateCompareClip();
+        ImageCompareDividerHandle.CaptureMouse();
+        // Handled=true prevents the click from bubbling up to the ScrollViewer's pan handler, which would
+        // otherwise start a pan on the same MouseDown.
+        e.Handled = true;
+    }
+
+    private void ImageCompareDividerHandle_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_compareWipeDragging)
+            return;
+        _compareWipeX = e.GetPosition(ImageCompareStage).X;
+        UpdateCompareClip();
+    }
+
+    private void ImageCompareDividerHandle_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        _compareWipeDragging = false;
+        ImageCompareDividerHandle.ReleaseMouseCapture();
     }
 
     // -------------------- Pan (left-drag on any compare ScrollViewer) --------------------
@@ -1880,6 +1902,13 @@ public partial class MainWindow : Window
     {
         if (sender is not System.Windows.Controls.ScrollViewer sv)
             return;
+
+        // Don't hijack clicks that landed on the wipe-divider handle — those belong to the wipe drag,
+        // not to panning. Preview events tunnel root→leaf, so this ScrollViewer handler runs BEFORE the
+        // handle's own MouseDown; check OriginalSource explicitly to defer to it.
+        if (e.OriginalSource is DependencyObject src && IsInDividerHandle(src))
+            return;
+
         _comparePanTarget = sv;
         _comparePanStart = e.GetPosition(sv);
         _comparePanStartH = sv.HorizontalOffset;
@@ -1887,6 +1916,17 @@ public partial class MainWindow : Window
         sv.CaptureMouse();
         Mouse.OverrideCursor = Cursors.SizeAll;
         e.Handled = true;
+    }
+
+    /// <summary>True when <paramref name="src"/> is (or is nested under) the wipe divider handle.</summary>
+    private bool IsInDividerHandle(DependencyObject src)
+    {
+        for (DependencyObject? cursor = src; cursor is not null; cursor = System.Windows.Media.VisualTreeHelper.GetParent(cursor))
+        {
+            if (ReferenceEquals(cursor, ImageCompareDividerHandle))
+                return true;
+        }
+        return false;
     }
 
     private void ImageComparePanScroll_MouseMove(object sender, MouseEventArgs e)
