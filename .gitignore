@@ -24,12 +24,10 @@ bld/
 [Ll]ogs/
 
 # .NET Core
+.vs
 project.lock.json
 project.fragment.lock.json
 artifacts/
-
-# ASP.NET Scaffolding
-ScaffoldingReadMe.txt
 
 # NuGet Packages
 *.nupkg
