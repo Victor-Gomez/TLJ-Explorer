@@ -1819,7 +1819,7 @@ public partial class MainWindow : Window
         ImageCompareSideMod.Width = _compareCanvasWidth; ImageCompareSideMod.Height = _compareCanvasHeight;
 
         _compareWipeX = _compareCanvasWidth / 2.0;
-        SetCompareZoom(1.0);
+        SetCompareZoom(ComputeCompareDefaultZoom());
         UpdateCompareClip();
 
         ImageCompareLabel.Text = $"Comparing {compare.OriginalLabel} — original {compare.Original.Width}×{compare.Original.Height}, " +
@@ -1829,23 +1829,36 @@ public partial class MainWindow : Window
         ApplyImageCompareMode();
     }
 
-    private const double CompareDividerHandleWidth = 14.0;
+    /// <summary>Target on-screen width in pixels for the visible divider bar. Stays constant regardless of zoom.</summary>
+    private const double CompareDividerScreenWidth = 2.0;
+    /// <summary>Target on-screen width in pixels for the transparent grab area around the divider.</summary>
+    private const double CompareDividerHandleScreenWidth = 14.0;
 
     private void UpdateCompareClip()
     {
         if (_compareOriginalBitmap is null)
             return;
         double x = Math.Max(0, Math.Min(_compareCanvasWidth, _compareWipeX));
+
         // Dual clip: ORIGINAL renders only on the LEFT of the divider, MOD only on the RIGHT. Because
         // neither image draws over the other's half, transparent pixels don't reveal a stretched low-res
         // version of the other side.
         ImageCompareOriginalClip.Rect = new Rect(0, 0, x, _compareCanvasHeight);
         ImageCompareClip.Rect = new Rect(x, 0, _compareCanvasWidth - x, _compareCanvasHeight);
-        ImageCompareDivider.Margin = new Thickness(x - 1, 0, 0, 0);
+
+        // The divider and its hit-area live inside the zoomed stage, so their local (unscaled) width has to
+        // be divided by the current zoom to hold a constant on-screen pixel size. Without this, zooming
+        // out to say 0.1× reduces a 2-unit bar to 0.2 screen pixels — invisible.
+        double zoom = Math.Max(_compareZoom, 1e-4);
+        double dividerLocalWidth = CompareDividerScreenWidth / zoom;
+        double handleLocalWidth = CompareDividerHandleScreenWidth / zoom;
+
+        ImageCompareDivider.Width = dividerLocalWidth;
+        ImageCompareDivider.Margin = new Thickness(x - (dividerLocalWidth / 2), 0, 0, 0);
         ImageCompareDivider.Height = _compareCanvasHeight;
-        // Wider transparent hit-area centred over the visible bar so a few pixels either side are still
-        // grabbable — a 2-px bar is too skinny to reliably click.
-        ImageCompareDividerHandle.Margin = new Thickness(x - (CompareDividerHandleWidth / 2), 0, 0, 0);
+
+        ImageCompareDividerHandle.Width = handleLocalWidth;
+        ImageCompareDividerHandle.Margin = new Thickness(x - (handleLocalWidth / 2), 0, 0, 0);
         ImageCompareDividerHandle.Height = _compareCanvasHeight;
     }
 
@@ -1970,11 +1983,41 @@ public partial class MainWindow : Window
         ImageCompareSideModScale.ScaleX = _compareZoom;
         ImageCompareSideModScale.ScaleY = _compareZoom;
         ImageCompareZoomLabel.Text = $"{_compareZoom * 100:0}%";
+
+        // Divider width is expressed in local (unscaled) coords, so it needs recomputing every zoom change
+        // to stay at a constant on-screen size.
+        if (_compareCanvasWidth > 0)
+            UpdateCompareClip();
     }
 
     private void ImageCompareZoomIn_Click(object sender, RoutedEventArgs e) => SetCompareZoom(_compareZoom * 1.25);
     private void ImageCompareZoomOut_Click(object sender, RoutedEventArgs e) => SetCompareZoom(_compareZoom / 1.25);
-    private void ImageCompareZoomReset_Click(object sender, RoutedEventArgs e) => SetCompareZoom(1.0);
+    private void ImageCompareZoomReset_Click(object sender, RoutedEventArgs e) => SetCompareZoom(ComputeCompareDefaultZoom());
+
+    /// <summary>
+    /// Default zoom for the compare view: fit the shared canvas inside whichever ScrollViewer is
+    /// currently visible (wipe or the first side-by-side pane), capped at 8×. Same rule as the main
+    /// image panel and the scene panel.
+    /// </summary>
+    private double ComputeCompareDefaultZoom()
+    {
+        if (_compareCanvasWidth <= 0 || _compareCanvasHeight <= 0)
+            return 1.0;
+
+        // Prefer the currently-visible ScrollViewer for size probing so the fit works out in both modes.
+        System.Windows.Controls.ScrollViewer probe =
+            ImageCompareWipeScroll.Visibility == Visibility.Visible
+                ? ImageCompareWipeScroll
+                : ImageCompareSideOriginalScroll;
+
+        double vpW = probe.ActualWidth;
+        double vpH = probe.ActualHeight;
+        if (vpW <= 0 || vpH <= 0)
+            return 1.0;
+
+        double fit = Math.Min(vpW / _compareCanvasWidth, vpH / _compareCanvasHeight);
+        return Math.Min(fit, 8.0);
+    }
 
     private void ImageCompare_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -2057,7 +2100,7 @@ public partial class MainWindow : Window
             ? $"Scene {(int)SceneCanvas.Width}x{(int)SceneCanvas.Height}"
             : $"Scene {(int)SceneCanvas.Width}x{(int)SceneCanvas.Height} -- {scene.Overlays.Count} animated overlay(s)";
 
-        SetSceneZoom(1.0);
+        SetSceneZoom(ComputeSceneDefaultZoom());
         SceneScrollViewer.ScrollToHorizontalOffset(0);
         SceneScrollViewer.ScrollToVerticalOffset(0);
 
@@ -2166,7 +2209,25 @@ public partial class MainWindow : Window
 
     private void SceneZoomOut_Click(object sender, RoutedEventArgs e) => SetSceneZoom(_sceneZoom / 1.25);
 
-    private void SceneResetZoom_Click(object sender, RoutedEventArgs e) => SetSceneZoom(1.0);
+    private void SceneResetZoom_Click(object sender, RoutedEventArgs e) => SetSceneZoom(ComputeSceneDefaultZoom());
+
+    /// <summary>
+    /// Default scene zoom: fit the composed scene inside the ScrollViewer viewport on both axes,
+    /// capped at 8× so a small backdrop doesn't blow up to fill the panel. Falls back to 1× when the
+    /// viewport hasn't laid out yet or the scene has no size.
+    /// </summary>
+    private double ComputeSceneDefaultZoom()
+    {
+        double w = SceneCanvas.Width;
+        double h = SceneCanvas.Height;
+        double vpW = SceneScrollViewer.ActualWidth;
+        double vpH = SceneScrollViewer.ActualHeight;
+        if (w <= 0 || h <= 0 || vpW <= 0 || vpH <= 0)
+            return 1.0;
+
+        double fit = Math.Min(vpW / w, vpH / h);
+        return Math.Min(fit, 8.0);
+    }
 
     private void SceneScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -2750,12 +2811,25 @@ public partial class MainWindow : Window
 
     private void ApplyDefaultZoom(DecodedImage image)
     {
-        int maxDim = Math.Max(image.Width, image.Height);
+        if (image.Width <= 0 || image.Height <= 0)
+        {
+            SetZoom(1.0);
+            return;
+        }
 
-        // Never shrink below native size by default; for small sprites, scale up to a comfortable
-        // minimum size, rounded down to a whole multiple so nearest-neighbor scaling stays crisp.
-        double zoom = maxDim <= 0 ? 1.0 : Math.Max(1.0, Math.Floor(PreferredDisplaySize / maxDim));
-        SetZoom(Math.Clamp(zoom, 1.0, 8.0));
+        // "Fit to window, but never more than 8×": compute the largest zoom that keeps the image inside
+        // the viewport on both axes, cap at 8× so tiny inventory icons don't blow up to fill the panel.
+        // Falls back to 1× if the ScrollViewer hasn't got a valid layout size yet (first load).
+        double vpW = ImageScrollViewer.ActualWidth;
+        double vpH = ImageScrollViewer.ActualHeight;
+        if (vpW <= 0 || vpH <= 0)
+        {
+            SetZoom(1.0);
+            return;
+        }
+
+        double fit = Math.Min(vpW / image.Width, vpH / image.Height);
+        SetZoom(Math.Min(fit, 8.0));
     }
 
     private void SetZoom(double zoom)
