@@ -1478,6 +1478,58 @@ public partial class MainWindow : Window
     private void UpdateExternalModsMenuState() =>
         ClearExternalModsMenuItem.IsEnabled = !string.IsNullOrEmpty(_settings.ExternalModsDir);
 
+    private void LocateFfmpeg_Click(object sender, RoutedEventArgs e) => PromptForFfmpegPath();
+
+    /// <summary>
+    /// Verifies <see cref="AppSettings.FfmpegPath"/> points at an existing ffmpeg.exe. When missing,
+    /// shows a message with download links and offers a file picker to locate it. Returns true only
+    /// if a valid ffmpeg.exe is available after the interaction.
+    /// </summary>
+    private bool EnsureFfmpegAvailable()
+    {
+        if (File.Exists(_settings.FfmpegPath))
+            return true;
+
+        const string message =
+            "ffmpeg.exe was not found — it's required to play Bink/Smacker videos.\n\n" +
+            "Download the \"shared\" (or \"full-shared\") Windows build from one of:\n" +
+            "  • https://www.gyan.dev/ffmpeg/builds/  (\"release full shared\" or \"essentials shared\")\n" +
+            "  • https://github.com/BtbN/FFmpeg-Builds/releases  (\"...win64-gpl-shared...\" or \"...win64-lgpl-shared...\")\n\n" +
+            "Extract the archive somewhere permanent, then click OK to point the app at the ffmpeg.exe inside its bin\\ folder.";
+
+        MessageBoxResult res = MessageBox.Show(
+            this, message, "ffmpeg not found",
+            MessageBoxButton.OKCancel, MessageBoxImage.Information);
+
+        if (res != MessageBoxResult.OK)
+            return false;
+
+        return PromptForFfmpegPath();
+    }
+
+    /// <summary>Opens a file picker for ffmpeg.exe and, if the user selects one, saves it to settings.
+    /// Returns true when a valid ffmpeg.exe is set at the end.</summary>
+    private bool PromptForFfmpegPath()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Locate ffmpeg.exe",
+            Filter = "ffmpeg.exe|ffmpeg.exe|Executables (*.exe)|*.exe|All files (*.*)|*.*",
+            FileName = "ffmpeg.exe",
+            CheckFileExists = true,
+        };
+
+        if (File.Exists(_settings.FfmpegPath))
+            dialog.InitialDirectory = Path.GetDirectoryName(_settings.FfmpegPath);
+
+        if (dialog.ShowDialog(this) != true)
+            return File.Exists(_settings.FfmpegPath);
+
+        _settings.FfmpegPath = dialog.FileName;
+        _settings.Save();
+        return true;
+    }
+
     private void DiagnoseExternalMods_Click(object sender, RoutedEventArgs e)
     {
         if (_vfs is null)
@@ -3149,6 +3201,13 @@ public partial class MainWindow : Window
         VideoLabel.Text = $"{video.Kind} video -- transcoding for playback...";
         VideoPlayPauseButton.IsEnabled = false;
         VideoPlayer.Source = null;
+
+        if (!EnsureFfmpegAvailable())
+        {
+            VideoLabel.Text = $"{video.Kind} video -- ffmpeg.exe is required for playback.\n\n" +
+                              "Use Options > Locate ffmpeg.exe... to point at a downloaded copy.";
+            return;
+        }
 
         int generation = ++_videoLoadGeneration;
         string ffmpegPath = _settings.FfmpegPath;
