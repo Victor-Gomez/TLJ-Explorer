@@ -79,6 +79,7 @@
         </Style>
     </Window.Resources>
 
+    <Grid>
     <DockPanel>
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="_File">
@@ -104,40 +105,8 @@
                 <MenuItem x:Name="AutoPlaySoundMenuItem" Header="_Auto-play Sound" IsCheckable="True" Click="AutoPlaySound_Click"/>
                 <MenuItem x:Name="AutoPlayVideoMenuItem" Header="Auto-play _Video" IsCheckable="True" Click="AutoPlayVideo_Click"/>
                 <MenuItem x:Name="LoopSoundMenuItem" Header="Loop _Sound Playback" IsCheckable="True" Click="LoopSound_Click"/>
-                <MenuItem x:Name="ShowMipMapsMenuItem" Header="Show _Mip Maps" IsCheckable="True" Click="ShowMipMaps_Click"/>
-                <MenuItem Header="Anti-_Alias">
-                    <MenuItem x:Name="AntiAliasNoneMenuItem" Header="_None" IsCheckable="True" Tag="0" Click="AntiAlias_Click"/>
-                    <MenuItem x:Name="AntiAlias2xMenuItem" Header="_2x" IsCheckable="True" Tag="2" Click="AntiAlias_Click"/>
-                    <MenuItem x:Name="AntiAlias4xMenuItem" Header="_4x" IsCheckable="True" Tag="4" Click="AntiAlias_Click"/>
-                    <MenuItem x:Name="AntiAliasDefaultMenuItem" Header="_Default" IsCheckable="True" Tag="-1" Click="AntiAlias_Click"/>
-                </MenuItem>
-                <MenuItem x:Name="HighQualityMenuItem" Header="_High Quality" IsCheckable="True" Click="HighQuality_Click"/>
                 <Separator/>
-                <MenuItem x:Name="DumpSceneDiagnosticsMenuItem" Header="_Dump Scene Diagnostics"
-                          IsCheckable="True" Click="DumpSceneDiagnostics_Click"
-                          ToolTip="When a scene folder is opened, write a per-scene table to %TEMP%\TLJExplorer_last_scene_items.txt for troubleshooting."/>
-                <MenuItem x:Name="HideLocalizedMenuItem" Header="Hide _Localized Entries"
-                          IsCheckable="True" Click="HideLocalized_Click"
-                          ToolTip="Hide XARC entries flagged as localised (non-English). Only the English (flag=0) variants remain visible in the tree."/>
-                <MenuItem x:Name="LoadAssetModsMenuItem" Header="Load Asset _Mods"
-                          IsCheckable="True" Click="LoadAssetMods_Click"
-                          ToolTip="Serve loose files under &lt;archive dir&gt;\xarc\ as overrides for the matching archive entries (ScummVM Stark's mod convention)."/>
-                <MenuItem Header="Select External M_ods Folder..." Click="SelectExternalModsFolder_Click"
-                          ToolTip="Point at a folder outside the install that mirrors the install's layout — files under &lt;modsDir&gt;/&lt;relPath&gt;/xarc/&lt;name&gt; will override the matching archive entries."/>
-                <MenuItem x:Name="ClearExternalModsMenuItem" Header="Clear External Mods Folder" Click="ClearExternalModsFolder_Click"
-                          IsEnabled="False"
-                          ToolTip="Unlink the current external mods folder — reverts to only in-install mods."/>
-                <MenuItem Header="Diagnose External Mods..." Click="DiagnoseExternalMods_Click"
-                          ToolTip="Walk the current external mods folder and report which files did and did not resolve to VFS entries."/>
-                <Separator/>
-                <MenuItem Header="Locate _ffmpeg.exe..." Click="LocateFfmpeg_Click"
-                          ToolTip="Point at ffmpeg.exe (from a &quot;shared&quot; build) so the app can transcode Bink/Smacker videos for playback."/>
-                <Separator/>
-                <MenuItem Header="_Theme">
-                    <MenuItem x:Name="ThemeSystemMenuItem" Header="_System" IsCheckable="True" Tag="System" Click="Theme_Click"/>
-                    <MenuItem x:Name="ThemeLightMenuItem" Header="_Light" IsCheckable="True" Tag="Light" Click="Theme_Click"/>
-                    <MenuItem x:Name="ThemeDarkMenuItem" Header="_Dark" IsCheckable="True" Tag="Dark" Click="Theme_Click"/>
-                </MenuItem>
+                <MenuItem Header="_Settings..." Click="OpenSettings_Click" InputGestureText="Ctrl+,"/>
             </MenuItem>
         </Menu>
 
@@ -671,4 +640,9 @@
             </Grid>
         </Grid>
     </DockPanel>
+
+        <!-- In-app settings overlay: sits on top of the whole DockPanel (menu bar included). Hidden
+             until File/Options → Settings opens it. Focusable so Esc can close it via key handler. -->
+        <views:SettingsPanel x:Name="SettingsOverlay" Visibility="Collapsed" Focusable="True"/>
+    </Grid>
 </Window>

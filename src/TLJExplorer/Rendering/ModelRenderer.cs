@@ -665,19 +665,29 @@ public sealed class ModelRenderer : IDisposable
 
     public void Dispose()
     {
-        MakeCurrent();
-        ClearGeometry();
-        ClearMaterialTextures();
-        DeleteFramebufferResources();
-
-        if (_program != 0)
+        // The hidden GLFW window MUST be disposed no matter what — its native message loop runs on
+        // a foreground thread and will keep the whole process alive if left behind (that's how you
+        // end up with orphaned TLJExplorer.exe instances after a crash on shutdown). Guard every
+        // earlier step and always land on _hiddenWindow.Dispose() in the finally.
+        try
         {
-            _gl.DeleteProgram(_program);
-            _program = 0;
-        }
+            try { MakeCurrent(); } catch { /* context may already be gone */ }
+            try { ClearGeometry(); } catch { }
+            try { ClearMaterialTextures(); } catch { }
+            try { DeleteFramebufferResources(); } catch { }
 
-        _gl.Dispose();
-        _hiddenWindow.Dispose();
+            if (_program != 0)
+            {
+                try { _gl.DeleteProgram(_program); } catch { }
+                _program = 0;
+            }
+
+            try { _gl.Dispose(); } catch { }
+        }
+        finally
+        {
+            try { _hiddenWindow.Dispose(); } catch { }
+        }
     }
 
     /// <summary><see cref="Vertices"/> is the un-skinned source data, kept for re-posing on demand.</summary>

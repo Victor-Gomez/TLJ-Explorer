@@ -131,6 +131,15 @@ public partial class MainWindow : Window
         bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
         bool typingInSearchBox = SearchBox.IsKeyboardFocused;
 
+        // Escape dismisses the in-app settings overlay when it's open. Handled before other
+        // shortcuts so it always wins while settings are showing.
+        if (e.Key == Key.Escape && SettingsOverlay.Visibility == Visibility.Visible)
+        {
+            SettingsOverlay.Hide();
+            e.Handled = true;
+            return;
+        }
+
         if (ctrl && e.Key == Key.O)
         {
             SelectFolder_Click(this, new RoutedEventArgs());
@@ -150,6 +159,11 @@ public partial class MainWindow : Window
         else if (ctrl && e.Key == Key.P)
         {
             OpenCommandPalette();
+            e.Handled = true;
+        }
+        else if (ctrl && e.Key == Key.OemComma)
+        {
+            OpenSettings_Click(this, new RoutedEventArgs());
             e.Handled = true;
         }
         else if (!typingInSearchBox && e.Key == Key.Space)
@@ -1299,17 +1313,10 @@ public partial class MainWindow : Window
         string bg = _settings.ModelViewerBackground;
         ModelBackgroundCombo.SelectedIndex = bg switch { "Light" => 1, "Transparent" => 2, _ => 0 };
         ApplyModelBackgroundPreset(bg);
-        ShowMipMapsMenuItem.IsChecked = _settings.ShowMipMaps;
-        HighQualityMenuItem.IsChecked = _settings.HighQuality;
-        DumpSceneDiagnosticsMenuItem.IsChecked = _settings.DumpSceneDiagnostics;
-        HideLocalizedMenuItem.IsChecked = _settings.HideLocalizedEntries;
-        LoadAssetModsMenuItem.IsChecked = _settings.LoadAssetMods;
-        UpdateExternalModsMenuState();
-        UpdateAntiAliasChecks();
         ApplyTheme(_settings.Theme);
     }
 
-    private void ApplyTheme(string theme)
+    internal void ApplyTheme(string theme)
     {
         // WPF's ThemeMode API is currently marked "for evaluation purposes only" and raises WPF0001.
         // Suppress here rather than project-wide -- if the API changes we want the warning re-surfacing.
@@ -1322,30 +1329,11 @@ public partial class MainWindow : Window
         };
         Application.Current.ThemeMode = mode;
         this.ThemeMode = mode;
-
-        ThemeSystemMenuItem.IsChecked = mode == ThemeMode.System;
-        ThemeLightMenuItem.IsChecked = mode == ThemeMode.Light;
-        ThemeDarkMenuItem.IsChecked = mode == ThemeMode.Dark;
 #pragma warning restore WPF0001
     }
 
-    private void Theme_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is System.Windows.Controls.MenuItem { Tag: string theme })
-        {
-            _settings.Theme = theme;
-            _settings.Save();
-            ApplyTheme(theme);
-        }
-    }
-
-    private void UpdateAntiAliasChecks()
-    {
-        AntiAliasNoneMenuItem.IsChecked = _settings.AntiAliasSamples == 0;
-        AntiAlias2xMenuItem.IsChecked = _settings.AntiAliasSamples == 2;
-        AntiAlias4xMenuItem.IsChecked = _settings.AntiAliasSamples == 4;
-        AntiAliasDefaultMenuItem.IsChecked = _settings.AntiAliasSamples == -1;
-    }
+    private void OpenSettings_Click(object sender, RoutedEventArgs e) =>
+        SettingsOverlay.Show(this, _settings);
 
     private void AutoPlaySound_Click(object sender, RoutedEventArgs e)
     {
@@ -1390,11 +1378,13 @@ public partial class MainWindow : Window
         RefreshRecentInstallsMenu();
     }
 
-    private void ShowMipMaps_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.ShowMipMaps = ShowMipMapsMenuItem.IsChecked;
-        _settings.Save();
+    // Setting-change callbacks invoked by the Settings dialog after it has already updated
+    // and persisted the underlying _settings value. Each one only carries the side-effects
+    // needed to make the change visible in the running UI (reload the current preview,
+    // reapply the tree filter, re-open the VFS with a new mods folder, ...).
 
+    internal void OnShowMipMapsChanged()
+    {
         // Affects .tm decoding directly: re-decode the current selection if it's still a TM texture.
         if (_selectedNode is not null && string.Equals(Path.GetExtension(_selectedNode.Name), ".tm", StringComparison.OrdinalIgnoreCase))
         {
@@ -1402,39 +1392,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private void AntiAlias_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is System.Windows.Controls.MenuItem { Tag: string tagValue } && int.TryParse(tagValue, out int samples))
-        {
-            _settings.AntiAliasSamples = samples;
-            _settings.Save();
-            UpdateAntiAliasChecks();
-        }
-    }
+    internal void OnHideLocalizedChanged() => _ = ApplyTreeFilterAsync();
 
-    private void HighQuality_Click(object sender, RoutedEventArgs e)
+    internal void OnLoadAssetModsChanged()
     {
-        _settings.HighQuality = HighQualityMenuItem.IsChecked;
-        _settings.Save();
-    }
-
-    private void DumpSceneDiagnostics_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.DumpSceneDiagnostics = DumpSceneDiagnosticsMenuItem.IsChecked;
-        _settings.Save();
-    }
-
-    private void HideLocalized_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.HideLocalizedEntries = HideLocalizedMenuItem.IsChecked;
-        _settings.Save();
-        _ = ApplyTreeFilterAsync();
-    }
-
-    private void LoadAssetMods_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.LoadAssetMods = LoadAssetModsMenuItem.IsChecked;
-        _settings.Save();
         if (_vfs is not null)
             _vfs.LoadMods = _settings.LoadAssetMods;
 
@@ -1448,7 +1409,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void SelectExternalModsFolder_Click(object sender, RoutedEventArgs e)
+    internal async Task SelectExternalModsFolderAsync()
     {
         var dialog = new OpenFolderDialog { Title = "Select External Mods Folder" };
         if (!string.IsNullOrEmpty(_settings.ExternalModsDir) && Directory.Exists(_settings.ExternalModsDir))
@@ -1459,26 +1420,21 @@ public partial class MainWindow : Window
 
         _settings.ExternalModsDir = dialog.FolderName;
         _settings.Save();
-        UpdateExternalModsMenuState();
 
         if (!string.IsNullOrEmpty(_settings.BaseDir))
             await InitVfsAsync(_settings.BaseDir);
     }
 
-    private async void ClearExternalModsFolder_Click(object sender, RoutedEventArgs e)
+    internal async Task ClearExternalModsFolderAsync()
     {
         _settings.ExternalModsDir = null;
         _settings.Save();
-        UpdateExternalModsMenuState();
 
         if (!string.IsNullOrEmpty(_settings.BaseDir))
             await InitVfsAsync(_settings.BaseDir);
     }
 
-    private void UpdateExternalModsMenuState() =>
-        ClearExternalModsMenuItem.IsEnabled = !string.IsNullOrEmpty(_settings.ExternalModsDir);
-
-    private void LocateFfmpeg_Click(object sender, RoutedEventArgs e) => PromptForFfmpegPath();
+    internal void PromptForFfmpeg() => PromptForFfmpegPath();
 
     /// <summary>
     /// Verifies <see cref="AppSettings.FfmpegPath"/> points at an existing ffmpeg.exe. When missing,
@@ -1530,7 +1486,7 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private void DiagnoseExternalMods_Click(object sender, RoutedEventArgs e)
+    internal void RunExternalModsDiagnostic()
     {
         if (_vfs is null)
         {
