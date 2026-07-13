@@ -715,4 +715,63 @@
         </DrawingImage.Drawing>
     </DrawingImage>
 
+    <!-- zoom-in.svg: magnifier with + -->
+    <DrawingImage x:Key="ZoomInIcon">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="Transparent">
+                <GeometryDrawing.Pen>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2"
+                         StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                </GeometryDrawing.Pen>
+                <GeometryDrawing.Geometry>
+                    <GeometryGroup>
+                        <EllipseGeometry Center="11,11" RadiusX="8" RadiusY="8"/>
+                        <PathGeometry Figures="M21 21 16.65 16.65"/>
+                        <PathGeometry Figures="M11 8 11 14"/>
+                        <PathGeometry Figures="M8 11 14 11"/>
+                    </GeometryGroup>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <!-- zoom-out.svg: magnifier with - -->
+    <DrawingImage x:Key="ZoomOutIcon">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="Transparent">
+                <GeometryDrawing.Pen>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2"
+                         StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                </GeometryDrawing.Pen>
+                <GeometryDrawing.Geometry>
+                    <GeometryGroup>
+                        <EllipseGeometry Center="11,11" RadiusX="8" RadiusY="8"/>
+                        <PathGeometry Figures="M21 21 16.65 16.65"/>
+                        <PathGeometry Figures="M8 11 14 11"/>
+                    </GeometryGroup>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+    <!-- Lucide "scan": four corner brackets — used here as a Fit-to-window action. -->
+    <DrawingImage x:Key="FitToWindowIcon">
+        <DrawingImage.Drawing>
+            <GeometryDrawing Brush="Transparent">
+                <GeometryDrawing.Pen>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2"
+                         StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                </GeometryDrawing.Pen>
+                <GeometryDrawing.Geometry>
+                    <GeometryGroup>
+                        <PathGeometry Figures="M3 7V5a2 2 0 0 1 2-2h2"/>
+                        <PathGeometry Figures="M17 3h2a2 2 0 0 1 2 2v2"/>
+                        <PathGeometry Figures="M21 17v2a2 2 0 0 1-2 2h-2"/>
+                        <PathGeometry Figures="M7 21H5a2 2 0 0 1-2-2v-2"/>
+                    </GeometryGroup>
+                </GeometryDrawing.Geometry>
+            </GeometryDrawing>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
 </ResourceDictionary>
