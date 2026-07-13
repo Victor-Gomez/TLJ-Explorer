@@ -56,10 +56,27 @@ public sealed class ArchiveWindowStream : Stream
         if (toRead <= 0)
             return 0;
 
-        _underlying.Position = _windowOffset + _position;
+        SyncUnderlyingPosition();
         int read = _underlying.Read(buffer, offset, toRead);
         _position += read;
         return read;
+    }
+
+    /// <summary>
+    /// Fast per-byte read: overridden to skip the base <see cref="Stream.ReadByte"/> implementation, which
+    /// allocates a fresh <c>byte[1]</c> on every call. Decoders like <c>XmgDecoder</c> read hundreds of
+    /// thousands of bytes one at a time, so the allocation churn dominated decode time.
+    /// </summary>
+    public override int ReadByte()
+    {
+        if (_position >= _windowLength)
+            return -1;
+
+        SyncUnderlyingPosition();
+        int b = _underlying.ReadByte();
+        if (b >= 0)
+            _position++;
+        return b;
     }
 
     public override long Seek(long offset, SeekOrigin origin)
@@ -94,10 +111,23 @@ public sealed class ArchiveWindowStream : Stream
         if (toRead <= 0)
             return 0;
 
-        _underlying.Position = _windowOffset + _position;
+        SyncUnderlyingPosition();
         int read = _underlying.Read(buffer[..toRead]);
         _position += read;
         return read;
+    }
+
+    /// <summary>
+    /// Nudge the underlying <see cref="FileStream"/> to the position this window logically points at, but
+    /// only when it's actually drifted -- sequential reads keep both positions in lockstep, so the common
+    /// case is a no-op. Skipping the redundant <c>Position</c> setter matters when a decoder hammers this
+    /// stream with millions of tiny reads.
+    /// </summary>
+    private void SyncUnderlyingPosition()
+    {
+        long target = _windowOffset + _position;
+        if (_underlying.Position != target)
+            _underlying.Position = target;
     }
 
     public override void SetLength(long value) =>

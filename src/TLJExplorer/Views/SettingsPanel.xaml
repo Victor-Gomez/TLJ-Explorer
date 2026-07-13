@@ -1,6 +1,34 @@
 <UserControl x:Class="TLJExplorer.Views.SettingsPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <!-- WinUI-style settings row: a rounded rectangle with title+subtitle on the left and a
+             control docked to the right. Rows stack vertically with a small gap. -->
+        <Style x:Key="SettingCard" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource CardBackgroundFillColorDefaultBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Padding" Value="16,12"/>
+            <Setter Property="Margin" Value="0,0,0,4"/>
+        </Style>
+        <Style x:Key="SettingTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="SettingSubtitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Opacity" Value="0.65"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin" Value="0,2,0,0"/>
+        </Style>
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Opacity" Value="0.85"/>
+            <Setter Property="Margin" Value="2,18,0,6"/>
+        </Style>
+    </UserControl.Resources>
     <!-- Modal-style overlay: a semi-transparent scrim over the app plus a centered card. The scrim
          is a Border with Background so mouse events don't fall through to controls beneath. -->
     <Border Background="#88000000" MouseLeftButtonDown="Scrim_MouseLeftButtonDown">
@@ -15,10 +43,11 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <DockPanel Grid.Row="0" Margin="20,14,12,10">
-                    <Button DockPanel.Dock="Right" Padding="10,4" Click="Close_Click"
+                <DockPanel Grid.Row="0" Margin="20,10,10,8">
+                    <Button DockPanel.Dock="Right" Width="34" Height="34" Padding="0" Click="Close_Click"
+                            Background="Transparent" BorderThickness="0"
                             ToolTip="Close settings (Esc)">
-                        <TextBlock Text="Close"/>
+                        <Image Source="{StaticResource CloseIcon}" Width="12" Height="12"/>
                     </Button>
                     <TextBlock Text="Settings" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/>
                 </DockPanel>
@@ -29,13 +58,53 @@
                         <ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
 
-                    <ListBox x:Name="CategoryList" Grid.Column="0" BorderThickness="0" Padding="6,6,6,10"
+                    <ListBox x:Name="CategoryList" Grid.Column="0" BorderThickness="0" Padding="4,6,4,10"
+                             Background="Transparent"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                              SelectionChanged="CategoryList_SelectionChanged">
                         <ListBox.ItemContainerStyle>
-                            <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                            <!-- WinUI 3 NavigationViewItem look: rounded pill background on hover/select,
+                                 plus a short vertical accent bar on the left of the selected item.
+                                 Template rewrite (rather than BasedOn) so the default Fluent selection
+                                 highlight doesn't compete with the accent bar. -->
+                            <Style TargetType="ListBoxItem">
                                 <Setter Property="Padding" Value="14,10"/>
-                                <Setter Property="Margin" Value="0,1"/>
+                                <Setter Property="Margin" Value="0,2"/>
                                 <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="BorderThickness" Value="0"/>
+                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}"/>
+                                <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Grid>
+                                                <Border x:Name="Bg" Background="{TemplateBinding Background}"
+                                                        CornerRadius="4"/>
+                                                <Rectangle x:Name="Indicator" Width="3" Height="16"
+                                                           RadiusX="1.5" RadiusY="1.5"
+                                                           HorizontalAlignment="Left" VerticalAlignment="Center"
+                                                           Margin="2,0,0,0"
+                                                           Fill="{DynamicResource AccentFillColorDefaultBrush}"
+                                                           Opacity="0"/>
+                                                <ContentPresenter Margin="{TemplateBinding Padding}"
+                                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                                            </Grid>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bg" Property="Background"
+                                                            Value="{DynamicResource SubtleFillColorSecondaryBrush}"/>
+                                                </Trigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Bg" Property="Background"
+                                                            Value="{DynamicResource SubtleFillColorTertiaryBrush}"/>
+                                                    <Setter TargetName="Indicator" Property="Opacity" Value="1"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
                             </Style>
                         </ListBox.ItemContainerStyle>
                         <ListBoxItem Content="Display" Tag="Display" IsSelected="True"/>
@@ -52,106 +121,158 @@
                             <StackPanel x:Name="DisplaySection">
                                 <TextBlock Text="Display" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
                                 <TextBlock Text="Rendering options for images, textures, and 3D previews."
-                                           Opacity="0.7" Margin="0,0,0,22"/>
+                                           Opacity="0.7" Margin="0,0,0,16"/>
 
-                                <TextBlock Text="Textures" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                <CheckBox x:Name="ShowMipMapsCheck" Content="Show mip maps"
-                                          Checked="ShowMipMaps_Changed" Unchecked="ShowMipMaps_Changed"/>
-                                <TextBlock Text="Include mip-map levels in TM texture previews."
-                                           Opacity="0.6" FontSize="11" Margin="22,2,0,14"/>
+                                <TextBlock Text="Textures" Style="{StaticResource SectionHeader}" Margin="2,0,0,6"/>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <CheckBox x:Name="ShowMipMapsCheck" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0"
+                                                  Checked="ShowMipMaps_Changed" Unchecked="ShowMipMaps_Changed"/>
+                                        <StackPanel>
+                                            <TextBlock Text="Show mip maps" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="Include mip-map levels in TM texture previews." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <CheckBox x:Name="HighQualityCheck" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0"
+                                                  Checked="HighQuality_Changed" Unchecked="HighQuality_Changed"/>
+                                        <StackPanel>
+                                            <TextBlock Text="High quality rendering" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="Prefer slower, higher-quality rendering for previews." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
 
-                                <CheckBox x:Name="HighQualityCheck" Content="High quality rendering"
-                                          Checked="HighQuality_Changed" Unchecked="HighQuality_Changed"/>
-                                <TextBlock Text="Prefer slower, higher-quality rendering for previews."
-                                           Opacity="0.6" FontSize="11" Margin="22,2,0,20"/>
-
-                                <TextBlock Text="Anti-aliasing" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                                <TextBlock Text="Sample count for the 3D model viewer."
-                                           Opacity="0.6" FontSize="11" Margin="0,0,0,8"/>
-                                <StackPanel Orientation="Horizontal">
-                                    <RadioButton x:Name="AaDefaultRadio" GroupName="Aa" Content="Default" Margin="0,0,16,0" Tag="-1" Checked="Aa_Changed"/>
-                                    <RadioButton x:Name="AaNoneRadio"    GroupName="Aa" Content="None"    Margin="0,0,16,0" Tag="0"  Checked="Aa_Changed"/>
-                                    <RadioButton x:Name="Aa2xRadio"      GroupName="Aa" Content="2x"      Margin="0,0,16,0" Tag="2"  Checked="Aa_Changed"/>
-                                    <RadioButton x:Name="Aa4xRadio"      GroupName="Aa" Content="4x"      Tag="4" Checked="Aa_Changed"/>
-                                </StackPanel>
+                                <TextBlock Text="3D viewer" Style="{StaticResource SectionHeader}"/>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <ComboBox x:Name="AaCombo" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="140"
+                                                  SelectionChanged="Aa_SelectionChanged">
+                                            <ComboBoxItem Content="Default" Tag="-1"/>
+                                            <ComboBoxItem Content="None"    Tag="0"/>
+                                            <ComboBoxItem Content="2x"      Tag="2"/>
+                                            <ComboBoxItem Content="4x"      Tag="4"/>
+                                        </ComboBox>
+                                        <StackPanel>
+                                            <TextBlock Text="Anti-aliasing" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="Sample count for the 3D model viewer." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
                             </StackPanel>
 
                             <!-- Assets and Mods -->
                             <StackPanel x:Name="ModsSection" Visibility="Collapsed">
                                 <TextBlock Text="Assets and Mods" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
                                 <TextBlock Text="How the file tree and previews resolve overrides."
-                                           Opacity="0.7" Margin="0,0,0,22"/>
+                                           Opacity="0.7" Margin="0,0,0,16"/>
 
-                                <CheckBox x:Name="HideLocalizedCheck" Content="Hide localized entries"
-                                          Checked="HideLocalized_Changed" Unchecked="HideLocalized_Changed"/>
-                                <TextBlock TextWrapping="Wrap" Opacity="0.6" FontSize="11" Margin="22,2,0,14"
-                                           Text="Hide XARC entries flagged as localised (non-English). Only the English (flag=0) variants remain visible in the tree."/>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <CheckBox x:Name="HideLocalizedCheck" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0"
+                                                  Checked="HideLocalized_Changed" Unchecked="HideLocalized_Changed"/>
+                                        <StackPanel>
+                                            <TextBlock Text="Hide localized entries" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="Hide XARC entries flagged as localised (non-English). Only the English (flag=0) variants remain visible in the tree." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <CheckBox x:Name="LoadAssetModsCheck" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0"
+                                                  Checked="LoadAssetMods_Changed" Unchecked="LoadAssetMods_Changed"/>
+                                        <StackPanel>
+                                            <TextBlock Text="Load asset mods" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="Serve loose files under &lt;archive dir&gt;\xarc\ as overrides for the matching archive entries (ScummVM Stark's mod convention)." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
 
-                                <CheckBox x:Name="LoadAssetModsCheck" Content="Load asset mods"
-                                          Checked="LoadAssetMods_Changed" Unchecked="LoadAssetMods_Changed"/>
-                                <TextBlock TextWrapping="Wrap" Opacity="0.6" FontSize="11" Margin="22,2,0,22"
-                                           Text="Serve loose files under &lt;archive dir&gt;\xarc\ as overrides for the matching archive entries (ScummVM Stark's mod convention)."/>
-
-                                <TextBlock Text="External mods folder" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                                <TextBlock TextWrapping="Wrap" Opacity="0.6" FontSize="11" Margin="0,0,0,8"
-                                           Text="A folder outside the install that mirrors its layout — files under &lt;modsDir&gt;/&lt;relPath&gt;/xarc/&lt;name&gt; override the matching archive entries."/>
-                                <DockPanel Margin="0,0,0,10">
-                                    <Button x:Name="ClearExternalModsButton" DockPanel.Dock="Right"
-                                            Content="Clear" Padding="12,4" Margin="6,0,0,0" Click="ClearExternalMods_Click"/>
-                                    <Button DockPanel.Dock="Right" Content="Browse..." Padding="12,4" Click="SelectExternalMods_Click"/>
-                                    <Border BorderBrush="{DynamicResource TextFillColorSecondaryBrush}" BorderThickness="0,0,0,1"
-                                            Padding="4,3,10,3">
-                                        <TextBlock x:Name="ExternalModsPathText" VerticalAlignment="Center"
-                                                   TextTrimming="CharacterEllipsis" Opacity="0.85"/>
-                                    </Border>
-                                </DockPanel>
-                                <Button HorizontalAlignment="Left" Content="Diagnose external mods..."
-                                        Padding="12,4" Click="DiagnoseExternalMods_Click"/>
+                                <TextBlock Text="External mods folder" Style="{StaticResource SectionHeader}"/>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <StackPanel>
+                                        <TextBlock Text="A folder outside the install that mirrors its layout — files under &lt;modsDir&gt;/&lt;relPath&gt;/xarc/&lt;name&gt; override the matching archive entries." Style="{StaticResource SettingSubtitle}" Margin="0,0,0,10"/>
+                                        <DockPanel>
+                                            <Button x:Name="ClearExternalModsButton" DockPanel.Dock="Right"
+                                                    Content="Clear" Padding="12,4" Margin="6,0,0,0" Click="ClearExternalMods_Click"/>
+                                            <Button DockPanel.Dock="Right" Content="Browse..." Padding="12,4" Margin="6,0,0,0" Click="SelectExternalMods_Click"/>
+                                            <TextBox x:Name="ExternalModsPathBox" VerticalAlignment="Center" Padding="6,4"
+                                                     LostFocus="ExternalModsPathBox_LostFocus"
+                                                     KeyDown="ExternalModsPathBox_KeyDown"/>
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Content="Run" Padding="16,4" Margin="12,0,0,0" Click="DiagnoseExternalMods_Click"/>
+                                        <StackPanel>
+                                            <TextBlock Text="Diagnose external mods" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="Walk the current external mods folder and report which files did and did not resolve to VFS entries." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
                             </StackPanel>
 
                             <!-- External Tools -->
                             <StackPanel x:Name="ToolsSection" Visibility="Collapsed">
                                 <TextBlock Text="External Tools" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
                                 <TextBlock Text="Paths to executables the app shells out to."
-                                           Opacity="0.7" Margin="0,0,0,22"/>
+                                           Opacity="0.7" Margin="0,0,0,16"/>
 
-                                <TextBlock Text="ffmpeg.exe" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                                <TextBlock TextWrapping="Wrap" Opacity="0.6" FontSize="11" Margin="0,0,0,8"
-                                           Text="Required to transcode Bink (.bbb) and Smacker (.sss) videos for playback. Point at ffmpeg.exe from a &quot;shared&quot; build (gyan.dev or BtbN)."/>
-                                <DockPanel>
-                                    <Button DockPanel.Dock="Right" Content="Locate..." Padding="12,4" Margin="6,0,0,0" Click="LocateFfmpeg_Click"/>
-                                    <Border BorderBrush="{DynamicResource TextFillColorSecondaryBrush}" BorderThickness="0,0,0,1"
-                                            Padding="4,3,10,3">
-                                        <TextBlock x:Name="FfmpegPathText" VerticalAlignment="Center"
-                                                   TextTrimming="CharacterEllipsis" Opacity="0.85"/>
-                                    </Border>
-                                </DockPanel>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <StackPanel>
+                                        <TextBlock Text="ffmpeg.exe" Style="{StaticResource SettingTitle}"/>
+                                        <TextBlock Text="Required to transcode Bink (.bbb) and Smacker (.sss) videos for playback. Point at ffmpeg.exe from a &quot;shared&quot; build (gyan.dev or BtbN)." Style="{StaticResource SettingSubtitle}" Margin="0,2,0,10"/>
+                                        <DockPanel>
+                                            <Button DockPanel.Dock="Right" Content="Locate..." Padding="12,4" Margin="6,0,0,0" Click="LocateFfmpeg_Click"/>
+                                            <TextBox x:Name="FfmpegPathBox" VerticalAlignment="Center" Padding="6,4"
+                                                     LostFocus="FfmpegPathBox_LostFocus"
+                                                     KeyDown="FfmpegPathBox_KeyDown"/>
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
                             </StackPanel>
 
                             <!-- Diagnostics -->
                             <StackPanel x:Name="DiagnosticsSection" Visibility="Collapsed">
                                 <TextBlock Text="Diagnostics" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
                                 <TextBlock Text="Troubleshooting output useful when reporting an issue."
-                                           Opacity="0.7" Margin="0,0,0,22"/>
+                                           Opacity="0.7" Margin="0,0,0,16"/>
 
-                                <CheckBox x:Name="DumpSceneDiagnosticsCheck" Content="Dump scene diagnostics"
-                                          Checked="DumpSceneDiagnostics_Changed" Unchecked="DumpSceneDiagnostics_Changed"/>
-                                <TextBlock TextWrapping="Wrap" Opacity="0.6" FontSize="11" Margin="22,2,0,0"
-                                           Text="When a scene folder is opened, also write a per-scene table to %TEMP%\TLJExplorer_last_scene_items.txt."/>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <CheckBox x:Name="DumpSceneDiagnosticsCheck" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0"
+                                                  Checked="DumpSceneDiagnostics_Changed" Unchecked="DumpSceneDiagnostics_Changed"/>
+                                        <StackPanel>
+                                            <TextBlock Text="Dump scene diagnostics" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="When a scene folder is opened, also write a per-scene table to %TEMP%\TLJExplorer_last_scene_items.txt." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
                             </StackPanel>
 
                             <!-- Appearance -->
                             <StackPanel x:Name="AppearanceSection" Visibility="Collapsed">
                                 <TextBlock Text="Appearance" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
                                 <TextBlock Text="Light or dark mode for the application chrome."
-                                           Opacity="0.7" Margin="0,0,0,22"/>
+                                           Opacity="0.7" Margin="0,0,0,16"/>
 
-                                <TextBlock Text="Theme" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                <StackPanel>
-                                    <RadioButton x:Name="ThemeSystemRadio" GroupName="Theme" Content="Follow system" Margin="0,0,0,8" Tag="System" Checked="Theme_Changed"/>
-                                    <RadioButton x:Name="ThemeLightRadio" GroupName="Theme" Content="Light"          Margin="0,0,0,8" Tag="Light"  Checked="Theme_Changed"/>
-                                    <RadioButton x:Name="ThemeDarkRadio"  GroupName="Theme" Content="Dark"           Tag="Dark"   Checked="Theme_Changed"/>
-                                </StackPanel>
+                                <Border Style="{StaticResource SettingCard}">
+                                    <DockPanel>
+                                        <ComboBox x:Name="ThemeCombo" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="140"
+                                                  SelectionChanged="Theme_SelectionChanged">
+                                            <ComboBoxItem Content="Follow system" Tag="System"/>
+                                            <ComboBoxItem Content="Light"         Tag="Light"/>
+                                            <ComboBoxItem Content="Dark"          Tag="Dark"/>
+                                        </ComboBox>
+                                        <StackPanel>
+                                            <TextBlock Text="Choose your mode" Style="{StaticResource SettingTitle}"/>
+                                            <TextBlock Text="Change the colors that appear in the app." Style="{StaticResource SettingSubtitle}"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
                             </StackPanel>
 
                         </Grid>

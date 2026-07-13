@@ -186,14 +186,28 @@
                                     <TextBlock Text="Compare Mod" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </Button>
-                            <TextBlock x:Name="ZoomLabel" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,10,0" MinWidth="42"/>
-                            <Button Content="Zoom Out" Padding="8,2" Margin="0,0,6,0" Click="ZoomOut_Click"/>
-                            <Button Content="Zoom In" Padding="8,2" Margin="0,0,6,0" Click="ZoomIn_Click"/>
-                            <Button Content="Reset Zoom" Padding="8,2" Click="ResetZoom_Click"/>
+                            <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="ResetZoom_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip="Fit to window">
+                                <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
+                            </Button>
+                            <TextBlock x:Name="ZoomLabel" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,10,0" MinWidth="42" TextAlignment="Right"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Click="ZoomOut_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip="Zoom out">
+                                <Image Source="{StaticResource ZoomOutIcon}" Width="14" Height="14"/>
+                            </Button>
+                            <Slider x:Name="ImageZoomSlider" Width="140" VerticalAlignment="Center"
+                                    Minimum="10" Maximum="800" Value="100"
+                                    SmallChange="10" LargeChange="50"
+                                    ValueChanged="ImageZoomSlider_ValueChanged"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="4,0,0,0" Click="ZoomIn_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip="Zoom in">
+                                <Image Source="{StaticResource ZoomInIcon}" Width="14" Height="14"/>
+                            </Button>
                         </StackPanel>
                     </DockPanel>
                     <ScrollViewer x:Name="ImageScrollViewer"
                                   HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                  SizeChanged="ImageScrollViewer_SizeChanged"
                                   PreviewMouseWheel="ImageScrollViewer_PreviewMouseWheel"
                                   PreviewMouseLeftButtonDown="ImageScrollViewer_MouseLeftButtonDown"
                                   PreviewMouseMove="ImageScrollViewer_MouseMove"
@@ -233,10 +247,23 @@
                                              VerticalAlignment="Center" Margin="0,0,10,0" Checked="ImageCompareMode_Changed"/>
                                 <RadioButton x:Name="ImageCompareSideBySideMode" Content="Side-by-side" GroupName="ImageCompareMode"
                                              VerticalAlignment="Center" Margin="0,0,14,0" Checked="ImageCompareMode_Changed"/>
-                                <TextBlock x:Name="ImageCompareZoomLabel" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,10,0" MinWidth="42"/>
-                                <Button Content="Zoom Out" Padding="8,2" Margin="0,0,6,0" Click="ImageCompareZoomOut_Click"/>
-                                <Button Content="Zoom In" Padding="8,2" Margin="0,0,6,0" Click="ImageCompareZoomIn_Click"/>
-                                <Button Content="Reset Zoom" Padding="8,2" Margin="0,0,10,0" Click="ImageCompareZoomReset_Click"/>
+                                <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="ImageCompareZoomReset_Click"
+                                        Background="Transparent" BorderThickness="0" ToolTip="Fit to window">
+                                    <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
+                                </Button>
+                                <TextBlock x:Name="ImageCompareZoomLabel" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,10,0" MinWidth="42" TextAlignment="Right"/>
+                                <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Click="ImageCompareZoomOut_Click"
+                                        Background="Transparent" BorderThickness="0" ToolTip="Zoom out">
+                                    <Image Source="{StaticResource ZoomOutIcon}" Width="14" Height="14"/>
+                                </Button>
+                                <Slider x:Name="ImageCompareZoomSlider" Width="140" VerticalAlignment="Center"
+                                        Minimum="10" Maximum="800" Value="100"
+                                        SmallChange="10" LargeChange="50"
+                                        ValueChanged="ImageCompareZoomSlider_ValueChanged"/>
+                                <Button Width="28" Height="28" Padding="0" Margin="4,0,10,0" Click="ImageCompareZoomIn_Click"
+                                        Background="Transparent" BorderThickness="0" ToolTip="Zoom in">
+                                    <Image Source="{StaticResource ZoomInIcon}" Width="14" Height="14"/>
+                                </Button>
                                 <Button Content="Close" Padding="8,2" Click="ImageCompareClose_Click"/>
                             </StackPanel>
                             <TextBlock x:Name="ImageCompareLabel" VerticalAlignment="Center" Opacity="0.8"
@@ -255,6 +282,7 @@
                         <ScrollViewer x:Name="ImageCompareWipeScroll"
                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                                       Cursor="Hand"
+                                      SizeChanged="ImageCompareScroll_SizeChanged"
                                       PreviewMouseWheel="ImageCompare_PreviewMouseWheel"
                                       PreviewMouseLeftButtonDown="ImageComparePanScroll_MouseDown"
                                       PreviewMouseMove="ImageComparePanScroll_MouseMove"
@@ -320,6 +348,7 @@
                                 <ScrollViewer x:Name="ImageCompareSideOriginalScroll"
                                               HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                                               Cursor="Hand"
+                                              SizeChanged="ImageCompareScroll_SizeChanged"
                                               ScrollChanged="ImageCompareSideScroll_ScrollChanged"
                                               PreviewMouseWheel="ImageCompare_PreviewMouseWheel"
                                               PreviewMouseLeftButtonDown="ImageComparePanScroll_MouseDown"
@@ -378,10 +407,23 @@
                             <ToggleButton x:Name="SceneDiagnosticsToggle" Content="Diagnostics" Padding="8,2" Margin="0,0,10,0"
                                           Checked="SceneDiagnosticsToggle_Changed" Unchecked="SceneDiagnosticsToggle_Changed"
                                           ToolTip="Show a text panel of every Item/Anim in this scene, per XrcSceneModel.Diagnose."/>
-                            <TextBlock x:Name="SceneZoomLabel" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,10,0" MinWidth="42"/>
-                            <Button Content="Zoom Out" Padding="8,2" Margin="0,0,6,0" Click="SceneZoomOut_Click"/>
-                            <Button Content="Zoom In" Padding="8,2" Margin="0,0,6,0" Click="SceneZoomIn_Click"/>
-                            <Button Content="Reset Zoom" Padding="8,2" Click="SceneResetZoom_Click"/>
+                            <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="SceneResetZoom_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip="Fit to window">
+                                <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
+                            </Button>
+                            <TextBlock x:Name="SceneZoomLabel" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,10,0" MinWidth="42" TextAlignment="Right"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Click="SceneZoomOut_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip="Zoom out">
+                                <Image Source="{StaticResource ZoomOutIcon}" Width="14" Height="14"/>
+                            </Button>
+                            <Slider x:Name="SceneZoomSlider" Width="140" VerticalAlignment="Center"
+                                    Minimum="10" Maximum="800" Value="100"
+                                    SmallChange="10" LargeChange="50"
+                                    ValueChanged="SceneZoomSlider_ValueChanged"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="4,0,0,0" Click="SceneZoomIn_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip="Zoom in">
+                                <Image Source="{StaticResource ZoomInIcon}" Width="14" Height="14"/>
+                            </Button>
                         </StackPanel>
                     </DockPanel>
                     <TextBox x:Name="SceneDiagnosticsText" DockPanel.Dock="Right" Width="360"

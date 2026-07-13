@@ -15,6 +15,42 @@ namespace TLJExplorer.Services;
 /// </summary>
 public static class ResourceLoader
 {
+    // Files at or below this size get slurped into memory once so decoders can read from a MemoryStream
+    // instead of hammering the archive with millions of tiny per-byte reads. Above this cap we fall back
+    // to the archive-window stream directly -- the decoder pays the streaming cost, but we don't blow up
+    // working set on the occasional huge asset (large videos, etc).
+    private const long InMemoryDecodeLimit = 32L * 1024 * 1024;
+
+    /// <summary>
+    /// Opens <paramref name="node"/> via the VFS, then pre-buffers into a <see cref="MemoryStream"/> when
+    /// it's small enough. Fully in-memory reads are 10-100x cheaper for decoders that walk bytes one at a
+    /// time; the archive-window stream stays fine for the giant assets that would blow up working set.
+    /// </summary>
+    private static Stream OpenBuffered(VirtualFileSystem vfs, FsNode node, VirtualFileSystem.OpenVariant variant)
+    {
+        Stream raw = vfs.OpenFile(node, variant);
+        if (raw is MemoryStream || !raw.CanSeek || raw.Length > InMemoryDecodeLimit)
+            return raw;
+
+        try
+        {
+            int size = checked((int)raw.Length);
+            var buffer = new byte[size];
+            int read = 0;
+            while (read < size)
+            {
+                int n = raw.Read(buffer, read, size - read);
+                if (n <= 0) break;
+                read += n;
+            }
+            return new MemoryStream(buffer, 0, read, writable: false, publiclyVisible: true);
+        }
+        finally
+        {
+            raw.Dispose();
+        }
+    }
+
     /// <summary>
     /// Loads and decodes <paramref name="node"/> according to its extension. Never throws: decode
     /// failures are captured and surfaced as an <see cref="ErrorResource"/> so the UI can show them
@@ -34,7 +70,7 @@ public static class ResourceLoader
 
         try
         {
-            using Stream stream = vfs.OpenFile(node, variant);
+            using Stream stream = OpenBuffered(vfs, node, variant);
             string ext = Path.GetExtension(node.Name).ToLowerInvariant();
 
             return ext switch

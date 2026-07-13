@@ -76,3 +76,5 @@ None of this would exist without the reverse-engineering work of two prior effor
   that the scene viewer here tries to approximate.
 
 Thanks to both projects and everyone who has contributed to them.
+
+The UI icons are from **[Lucide](https://lucide.dev)** (ISC licensed).

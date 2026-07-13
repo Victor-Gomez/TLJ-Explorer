@@ -208,20 +208,30 @@ public static class XmgDecoder
         WritePixel(pixels, width, height, x, y, r, g, b, 255);
     }
 
+    // 16.16 fixed-point Cr/Cb -> RGB coefficients. Multiplying these into the signed cr/cb (range -128..127)
+    // stays well inside Int32, and one arithmetic right shift by 16 recovers the scaled contribution. Adding
+    // 32768 before the shift rounds to nearest instead of truncating toward zero, matching the prior
+    // Math.Round path to within the LSB. XmgDecoder invokes this once per sub-pixel; on a full-screen
+    // background that's millions of calls, so avoiding the double-precision path is a measurable win.
+    private const int CrToR = 91881;    // 1.402  * 65536
+    private const int CbToG = 22553;    // 0.344136 * 65536
+    private const int CrToG = 46801;    // 0.714136 * 65536
+    private const int CbToB = 116129;   // 1.772  * 65536
+    private const int RoundBias = 32768;
+
     private static void WriteYuvPixel(byte[] pixels, int width, int height, int x, int y, byte lumaY, sbyte cr, sbyte cb)
     {
-        double yValue = lumaY;
-        int r = ClampToByte(yValue + 1.402 * cr);
-        int g = ClampToByte(yValue - 0.344136 * cb - 0.714136 * cr);
-        int b = ClampToByte(yValue + 1.772 * cb);
+        int r = ClampToByte(lumaY + ((CrToR * cr + RoundBias) >> 16));
+        int g = ClampToByte(lumaY - ((CbToG * cb + CrToG * cr + RoundBias) >> 16));
+        int b = ClampToByte(lumaY + ((CbToB * cb + RoundBias) >> 16));
         WritePixel(pixels, width, height, x, y, (byte)r, (byte)g, (byte)b, 255);
     }
 
-    private static int ClampToByte(double value)
+    private static int ClampToByte(int value)
     {
         if (value <= 0) return 0;
         if (value >= 255) return 255;
-        return (int)Math.Round(value);
+        return value;
     }
 
     private static void WritePixel(byte[] pixels, int width, int height, int x, int y, byte r, byte g, byte b, byte a)

@@ -43,6 +43,11 @@ public partial class MainWindow : Window
     // against this and drop stale results (user clicked away while the load was in flight).
     private int _modelLoadGeneration;
 
+    // Same idea for the async resource-decode path: LoadSelectedResource hops the decode onto a worker
+    // thread, and the continuation checks this counter to avoid a slow-loading asset overwriting a newer
+    // selection when it finally lands.
+    private int _resourceLoadGeneration;
+
     // ---------------------------------------------------------------------
     // Model / Skin / Animation browsing (see ModelBrowseCatalog)
     // ---------------------------------------------------------------------
@@ -629,6 +634,18 @@ public partial class MainWindow : Window
             ? _selectedNode
             : _vfs.Root;
 
+        MessageBoxResult formatChoice = MessageBox.Show(
+            this,
+            "Export images as PNG (with transparency)?\n\nYes = PNG   No = TGA   Cancel = abort",
+            "TLJ Explorer",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question);
+        if (formatChoice == MessageBoxResult.Cancel)
+            return;
+        BatchImageFormat imageFormat = formatChoice == MessageBoxResult.Yes
+            ? BatchImageFormat.Png
+            : BatchImageFormat.Tga;
+
         var dialog = new OpenFolderDialog
         {
             Title = $"Choose output folder for batch export of \"{sourceRoot.GetPath()}\"",
@@ -665,6 +682,7 @@ public partial class MainWindow : Window
                 sourceNode,
                 vfs,
                 outputDir,
+                imageFormat,
                 progress: p =>
                 {
                     DateTime now = DateTime.UtcNow;
@@ -1162,8 +1180,9 @@ public partial class MainWindow : Window
         var dialog = new SaveFileDialog
         {
             Title = "Export Image",
-            Filter = "Targa image (*.tga)|*.tga",
-            FileName = SanitizeFileName(entry.Name) + ".tga",
+            Filter = "PNG image (*.png)|*.png|Targa image (*.tga)|*.tga",
+            FilterIndex = 1,
+            FileName = SanitizeFileName(entry.Name) + ".png",
         };
         ApplyRememberedExportFolder(dialog);
 
@@ -1172,7 +1191,11 @@ public partial class MainWindow : Window
 
         try
         {
-            TgaWriter.Write(entry.Image, dialog.FileName);
+            string ext = Path.GetExtension(dialog.FileName).ToLowerInvariant();
+            if (ext == ".tga")
+                TgaWriter.Write(entry.Image, dialog.FileName);
+            else
+                PngWriter.Write(entry.Image, dialog.FileName);
             RememberExportFolder(dialog.FileName);
         }
         catch (Exception ex)
@@ -1183,6 +1206,17 @@ public partial class MainWindow : Window
 
     private void ExportMultipleImages(IReadOnlyList<(string Name, DecodedImage Image)> images)
     {
+        MessageBoxResult choice = MessageBox.Show(
+            this,
+            "Export as PNG (with transparency)?\n\nYes = PNG   No = TGA   Cancel = abort",
+            "TLJ Explorer",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question);
+        if (choice == MessageBoxResult.Cancel)
+            return;
+        bool asPng = choice == MessageBoxResult.Yes;
+        string extension = asPng ? ".png" : ".tga";
+
         var dialog = new OpenFolderDialog { Title = "Select destination folder for exported images" };
         ApplyRememberedExportFolder(dialog);
         if (dialog.ShowDialog(this) != true)
@@ -1195,9 +1229,12 @@ public partial class MainWindow : Window
         {
             foreach (var (name, image) in images)
             {
-                string fileName = SanitizeFileName(string.IsNullOrEmpty(name) ? $"image_{exported}" : name) + ".tga";
+                string fileName = SanitizeFileName(string.IsNullOrEmpty(name) ? $"image_{exported}" : name) + extension;
                 string path = Path.Combine(dialog.FolderName, fileName);
-                TgaWriter.Write(image, path);
+                if (asPng)
+                    PngWriter.Write(image, path);
+                else
+                    TgaWriter.Write(image, path);
                 exported++;
             }
 
@@ -1434,6 +1471,14 @@ public partial class MainWindow : Window
             await InitVfsAsync(_settings.BaseDir);
     }
 
+    /// <summary>Re-init the VFS against the current BaseDir + settings, if a BaseDir is set.
+    /// Used by the settings panel when a path field is edited directly.</summary>
+    internal async Task ReloadVfsIfLoadedAsync()
+    {
+        if (!string.IsNullOrEmpty(_settings.BaseDir))
+            await InitVfsAsync(_settings.BaseDir);
+    }
+
     internal void PromptForFfmpeg() => PromptForFfmpegPath();
 
     /// <summary>
@@ -1582,7 +1627,7 @@ public partial class MainWindow : Window
         ShowContent(scene);
     }
 
-    private void LoadSelectedResource(FsNode node, VirtualFileSystem.OpenVariant variant = VirtualFileSystem.OpenVariant.Preferred)
+    private async void LoadSelectedResource(FsNode node, VirtualFileSystem.OpenVariant variant = VirtualFileSystem.OpenVariant.Preferred)
     {
         if (_vfs is null)
             return;
@@ -1599,7 +1644,28 @@ public partial class MainWindow : Window
             return;
         }
 
-        ResourceContent content = ResourceLoader.Load(node, _vfs, _settings, _tempFiles, variant);
+        int generation = ++_resourceLoadGeneration;
+        VirtualFileSystem vfs = _vfs;
+        AppSettings settings = _settings;
+        TempFileTracker tempFiles = _tempFiles;
+        SetStatus($"{node.GetPath()}  —  loading...");
+
+        ResourceContent content;
+        try
+        {
+            content = await Task.Run(() => ResourceLoader.Load(node, vfs, settings, tempFiles, variant));
+        }
+        catch (Exception ex)
+        {
+            // ResourceLoader.Load already turns most decode failures into ErrorResource, but a truly
+            // unexpected throw (e.g. thread-abort during shutdown) shouldn't crash the app.
+            content = new ErrorResource($"Failed to load \"{node.GetPath()}\":\n{ex.Message}");
+        }
+
+        // Drop the result if the user has moved on to a different selection in the meantime.
+        if (generation != _resourceLoadGeneration)
+            return;
+
         _currentContent = content;
         ShowContent(content);
 
@@ -1607,7 +1673,7 @@ public partial class MainWindow : Window
         {
             VirtualFileSystem.OpenVariant.Original when node.HasMod => "  [original]",
             VirtualFileSystem.OpenVariant.Mod when node.HasMod => "  [modded]",
-            _ => node.HasMod && _vfs.LoadMods ? "  [modded]" : "",
+            _ => node.HasMod && vfs.LoadMods ? "  [modded]" : "",
         };
         SetStatus($"{node.GetPath()}  —  {FormatContentMetadata(node, content)}{variantSuffix}");
     }
@@ -1691,6 +1757,7 @@ public partial class MainWindow : Window
     private List<(string Name, DecodedImage Image)> _currentImages = [];
     private DecodedImage? _currentDisplayedImage;
     private double _imageZoom = 1.0;
+    private bool _imageFitToWindow;
     private Point? _panStart;
     private double _panStartHOffset;
     private double _panStartVOffset;
@@ -1800,6 +1867,7 @@ public partial class MainWindow : Window
     private BitmapSource? _compareModBitmap;
     private double _compareWipeX;
     private double _compareZoom = 1.0;
+    private bool _compareFitToWindow;
     private int _compareCanvasWidth;
     private int _compareCanvasHeight;
     private bool _syncingCompareScroll;
@@ -1827,7 +1895,10 @@ public partial class MainWindow : Window
         ImageCompareSideMod.Width = _compareCanvasWidth; ImageCompareSideMod.Height = _compareCanvasHeight;
 
         _compareWipeX = _compareCanvasWidth / 2.0;
-        SetCompareZoom(ComputeCompareDefaultZoom());
+        // Panel is still Collapsed at this point, so the compare ScrollViewers have no ActualWidth
+        // yet — ComputeCompareDefaultZoom would fall back to 1.0 and crop large images. Defer the
+        // fit calculation until after WPF lays the panel out.
+        ApplyCompareDefaultZoomWhenReady();
         UpdateCompareClip();
 
         ImageCompareLabel.Text = $"Comparing {compare.OriginalLabel} — original {compare.Original.Width}×{compare.Original.Height}, " +
@@ -1981,9 +2052,17 @@ public partial class MainWindow : Window
     private const double CompareMinZoom = 0.1;
     private const double CompareMaxZoom = 16.0;
 
+    private bool _syncingCompareZoomSlider;
+
     private void SetCompareZoom(double zoom)
     {
         _compareZoom = Math.Clamp(zoom, CompareMinZoom, CompareMaxZoom);
+
+        // See SetZoom: the slider raises ValueChanged during InitializeComponent, before named XAML
+        // fields are wired up. Bail out until the window is initialized.
+        if (!IsInitialized)
+            return;
+
         ImageCompareStageScale.ScaleX = _compareZoom;
         ImageCompareStageScale.ScaleY = _compareZoom;
         ImageCompareSideOriginalScale.ScaleX = _compareZoom;
@@ -1991,6 +2070,9 @@ public partial class MainWindow : Window
         ImageCompareSideModScale.ScaleX = _compareZoom;
         ImageCompareSideModScale.ScaleY = _compareZoom;
         ImageCompareZoomLabel.Text = $"{_compareZoom * 100:0}%";
+        _syncingCompareZoomSlider = true;
+        try { ImageCompareZoomSlider.Value = _compareZoom * 100.0; }
+        finally { _syncingCompareZoomSlider = false; }
 
         // Divider width is expressed in local (unscaled) coords, so it needs recomputing every zoom change
         // to stay at a constant on-screen size.
@@ -1998,9 +2080,17 @@ public partial class MainWindow : Window
             UpdateCompareClip();
     }
 
-    private void ImageCompareZoomIn_Click(object sender, RoutedEventArgs e) => SetCompareZoom(_compareZoom * 1.25);
-    private void ImageCompareZoomOut_Click(object sender, RoutedEventArgs e) => SetCompareZoom(_compareZoom / 1.25);
-    private void ImageCompareZoomReset_Click(object sender, RoutedEventArgs e) => SetCompareZoom(ComputeCompareDefaultZoom());
+    private void ImageCompareZoomIn_Click(object sender, RoutedEventArgs e)
+    {
+        _compareFitToWindow = false;
+        SetCompareZoom(_compareZoom * 1.25);
+    }
+    private void ImageCompareZoomOut_Click(object sender, RoutedEventArgs e)
+    {
+        _compareFitToWindow = false;
+        SetCompareZoom(_compareZoom / 1.25);
+    }
+    private void ImageCompareZoomReset_Click(object sender, RoutedEventArgs e) => ApplyCompareDefaultZoomWhenReady();
 
     /// <summary>
     /// Default zoom for the compare view: fit the shared canvas inside whichever ScrollViewer is
@@ -2027,8 +2117,38 @@ public partial class MainWindow : Window
         return Math.Min(fit, 8.0);
     }
 
+    /// <summary>
+    /// Applies the fit-to-window zoom to the compare stage, deferring until WPF has laid out the
+    /// compare ScrollViewers if they're not measured yet (entry to compare mode toggles their
+    /// visibility, so ActualWidth is 0 on the same tick).
+    /// </summary>
+    private void ApplyCompareDefaultZoomWhenReady()
+    {
+        System.Windows.Controls.ScrollViewer probe =
+            ImageCompareWipeScroll.Visibility == Visibility.Visible
+                ? ImageCompareWipeScroll
+                : ImageCompareSideOriginalScroll;
+
+        if (probe.ActualWidth <= 0 || probe.ActualHeight <= 0)
+        {
+            Dispatcher.BeginInvoke(new Action(ApplyCompareDefaultZoomWhenReady),
+                System.Windows.Threading.DispatcherPriority.Loaded);
+            return;
+        }
+
+        SetCompareZoom(ComputeCompareDefaultZoom());
+        _compareFitToWindow = true;
+    }
+
+    private void ImageCompareScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_compareFitToWindow && ImageComparePanel.Visibility == Visibility.Visible)
+            ApplyCompareDefaultZoomWhenReady();
+    }
+
     private void ImageCompare_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
+        _compareFitToWindow = false;
         SetCompareZoom(e.Delta > 0 ? _compareZoom * 1.25 : _compareZoom / 1.25);
         e.Handled = true;
     }
@@ -2144,12 +2264,36 @@ public partial class MainWindow : Window
         _sceneOverlays.Clear();
     }
 
+    private bool _syncingSceneZoomSlider;
+
     private void SetSceneZoom(double zoom)
     {
         _sceneZoom = Math.Clamp(zoom, MinZoom, MaxZoom);
+
+        // See SetZoom: the slider raises ValueChanged during InitializeComponent, before named XAML
+        // fields are wired up. Bail out until the window is initialized.
+        if (!IsInitialized)
+            return;
+
         SceneScale.ScaleX = _sceneZoom;
         SceneScale.ScaleY = _sceneZoom;
         SceneZoomLabel.Text = $"{_sceneZoom * 100:0}%";
+        _syncingSceneZoomSlider = true;
+        try { SceneZoomSlider.Value = _sceneZoom * 100.0; }
+        finally { _syncingSceneZoomSlider = false; }
+    }
+
+    private void SceneZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_syncingSceneZoomSlider) return;
+        SetSceneZoom(e.NewValue / 100.0);
+    }
+
+    private void ImageCompareZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_syncingCompareZoomSlider) return;
+        _compareFitToWindow = false;
+        SetCompareZoom(e.NewValue / 100.0);
     }
 
     private void SceneDiagnosticsToggle_Changed(object sender, RoutedEventArgs e)
@@ -2827,30 +2971,71 @@ public partial class MainWindow : Window
 
         // "Fit to window, but never more than 8×": compute the largest zoom that keeps the image inside
         // the viewport on both axes, cap at 8× so tiny inventory icons don't blow up to fill the panel.
-        // Falls back to 1× if the ScrollViewer hasn't got a valid layout size yet (first load).
+        // On first load the ScrollViewer hasn't laid out yet (ActualWidth == 0) — in that case defer
+        // to the next dispatcher tick so we compute against real dimensions rather than falling back
+        // to 100% and cropping a large image.
         double vpW = ImageScrollViewer.ActualWidth;
         double vpH = ImageScrollViewer.ActualHeight;
         if (vpW <= 0 || vpH <= 0)
         {
-            SetZoom(1.0);
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_currentDisplayedImage is DecodedImage current && ReferenceEquals(current, image))
+                    ApplyDefaultZoom(image);
+            }), System.Windows.Threading.DispatcherPriority.Loaded);
             return;
         }
 
         double fit = Math.Min(vpW / image.Width, vpH / image.Height);
         SetZoom(Math.Min(fit, 8.0));
+        // Mark AFTER SetZoom, since SetZoom's user-facing callers clear this flag.
+        _imageFitToWindow = true;
     }
+
+    private void ImageScrollViewer_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_imageFitToWindow && _currentDisplayedImage is { } image)
+            ApplyDefaultZoom(image);
+    }
+
+    private bool _syncingImageZoomSlider;
 
     private void SetZoom(double zoom)
     {
         _imageZoom = Math.Clamp(zoom, MinZoom, MaxZoom);
+
+        // The slider raises ValueChanged during InitializeComponent, before the named XAML fields have
+        // been assigned. IsInitialized flips to true only after the XAML tree is fully wired up; bail
+        // out until then. The first real SetZoom call arrives via ApplyDefaultZoom after an image loads.
+        if (!IsInitialized)
+            return;
+
         ImageScale.ScaleX = _imageZoom;
         ImageScale.ScaleY = _imageZoom;
         ZoomLabel.Text = $"{_imageZoom * 100:0}%";
+        _syncingImageZoomSlider = true;
+        try { ImageZoomSlider.Value = _imageZoom * 100.0; }
+        finally { _syncingImageZoomSlider = false; }
     }
 
-    private void ZoomIn_Click(object sender, RoutedEventArgs e) => SetZoom(_imageZoom * 1.25);
+    private void ImageZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_syncingImageZoomSlider) return;
+        _imageFitToWindow = false;
+        SetZoom(e.NewValue / 100.0);
+    }
 
-    private void ZoomOut_Click(object sender, RoutedEventArgs e) => SetZoom(_imageZoom / 1.25);
+    private void ZoomIn_Click(object sender, RoutedEventArgs e)
+    {
+        _imageFitToWindow = false;
+        SetZoom(_imageZoom * 1.25);
+    }
+
+    private void ZoomOut_Click(object sender, RoutedEventArgs e)
+    {
+        _imageFitToWindow = false;
+        SetZoom(_imageZoom / 1.25);
+    }
 
     private void ResetZoom_Click(object sender, RoutedEventArgs e)
     {
@@ -2864,6 +3049,7 @@ public partial class MainWindow : Window
             return;
 
         e.Handled = true;
+        _imageFitToWindow = false;
         SetZoom(e.Delta > 0 ? _imageZoom * 1.25 : _imageZoom / 1.25);
     }
 

@@ -17,6 +17,9 @@ public sealed record BatchExportSummary(
     int FailedCount,
     IReadOnlyList<string> FailedPaths);
 
+/// <summary>Output format for exported 2D images (.xmg / .tm) during a batch walk.</summary>
+public enum BatchImageFormat { Tga, Png }
+
 /// <summary>
 /// Walks a subtree of the loaded virtual file system and exports every file it knows how to convert into
 /// a common format, preserving the source folder hierarchy under an output root directory.
@@ -42,6 +45,7 @@ public static class BatchExporter
         FsNode root,
         VirtualFileSystem vfs,
         string outputDirectory,
+        BatchImageFormat imageFormat = BatchImageFormat.Png,
         Action<BatchExportProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -75,7 +79,7 @@ public static class BatchExporter
             try
             {
                 Directory.CreateDirectory(destinationDir);
-                result = ExportOne(file, vfs, destinationDir, stem);
+                result = ExportOne(file, vfs, destinationDir, stem, imageFormat);
             }
             catch
             {
@@ -95,9 +99,10 @@ public static class BatchExporter
         return new BatchExportSummary(exported, skipped, failed, failedPaths);
     }
 
-    private static BatchExportResult ExportOne(FsNode file, VirtualFileSystem vfs, string destinationDir, string stem)
+    private static BatchExportResult ExportOne(FsNode file, VirtualFileSystem vfs, string destinationDir, string stem, BatchImageFormat imageFormat)
     {
         string ext = Path.GetExtension(file.Name).ToLowerInvariant();
+        string imgExt = imageFormat == BatchImageFormat.Png ? ".png" : ".tga";
 
         switch (ext)
         {
@@ -105,7 +110,7 @@ public static class BatchExporter
             {
                 using Stream s = vfs.OpenFile(file);
                 DecodedImage img = XmgDecoder.Decode(s);
-                TgaWriter.Write(img, Path.Combine(destinationDir, SanitizeSegment(stem) + ".tga"));
+                WriteImage(img, Path.Combine(destinationDir, SanitizeSegment(stem) + imgExt), imageFormat);
                 return BatchExportResult.Exported;
             }
 
@@ -119,7 +124,7 @@ public static class BatchExporter
                 if (entries.Count == 1)
                 {
                     string subName = string.IsNullOrEmpty(entries[0].Name) ? stem : entries[0].Name;
-                    TgaWriter.Write(entries[0].Image, Path.Combine(destinationDir, SanitizeSegment(subName) + ".tga"));
+                    WriteImage(entries[0].Image, Path.Combine(destinationDir, SanitizeSegment(subName) + imgExt), imageFormat);
                 }
                 else
                 {
@@ -129,7 +134,7 @@ public static class BatchExporter
                     foreach (TmEntry entry in entries)
                     {
                         string subName = string.IsNullOrEmpty(entry.Name) ? $"image_{i}" : entry.Name;
-                        TgaWriter.Write(entry.Image, Path.Combine(subFolder, SanitizeSegment(subName) + ".tga"));
+                        WriteImage(entry.Image, Path.Combine(subFolder, SanitizeSegment(subName) + imgExt), imageFormat);
                         i++;
                     }
                 }
@@ -187,6 +192,14 @@ public static class BatchExporter
             default:
                 return BatchExportResult.SkippedUnsupported;
         }
+    }
+
+    private static void WriteImage(DecodedImage image, string path, BatchImageFormat format)
+    {
+        if (format == BatchImageFormat.Png)
+            PngWriter.Write(image, path);
+        else
+            TgaWriter.Write(image, path);
     }
 
     /// <summary>
