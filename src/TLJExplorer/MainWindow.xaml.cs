@@ -646,6 +646,18 @@ public partial class MainWindow : Window
             ? BatchImageFormat.Png
             : BatchImageFormat.Tga;
 
+        MessageBoxResult modelFormatChoice = MessageBox.Show(
+            this,
+            "Export models as glTF (.glb)?\n\nYes = GLB (rigged/skinned)   No = OBJ (+ .mtl)   Cancel = abort",
+            "TLJ Explorer",
+            MessageBoxButton.YesNoCancel,
+            MessageBoxImage.Question);
+        if (modelFormatChoice == MessageBoxResult.Cancel)
+            return;
+        BatchModelFormat modelFormat = modelFormatChoice == MessageBoxResult.Yes
+            ? BatchModelFormat.Glb
+            : BatchModelFormat.Obj;
+
         var dialog = new OpenFolderDialog
         {
             Title = $"Choose output folder for batch export of \"{sourceRoot.GetPath()}\"",
@@ -683,6 +695,7 @@ public partial class MainWindow : Window
                 vfs,
                 outputDir,
                 imageFormat,
+                modelFormat,
                 progress: p =>
                 {
                     DateTime now = DateTime.UtcNow;

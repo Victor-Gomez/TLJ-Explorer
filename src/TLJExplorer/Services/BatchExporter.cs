@@ -20,6 +20,9 @@ public sealed record BatchExportSummary(
 /// <summary>Output format for exported 2D images (.xmg / .tm) during a batch walk.</summary>
 public enum BatchImageFormat { Tga, Png }
 
+/// <summary>Output format for exported models (.cir / .biff) during a batch walk.</summary>
+public enum BatchModelFormat { Glb, Obj }
+
 /// <summary>
 /// Walks a subtree of the loaded virtual file system and exports every file it knows how to convert into
 /// a common format, preserving the source folder hierarchy under an output root directory.
@@ -28,7 +31,8 @@ public enum BatchImageFormat { Tga, Png }
 /// <list type="bullet">
 ///   <item><description>Images (.xmg, .tm) → one or more <c>.tga</c> files (TM files split by sub-image name).</description></item>
 ///   <item><description>Sounds (.ovs, .isn family) → <c>.wav</c>.</description></item>
-///   <item><description>Models (.cir, .biff) → <c>.obj</c> + <c>.mtl</c> pair.</description></item>
+///   <item><description>Models (.cir, .biff) → <c>.glb</c> (default) or <c>.obj</c> + <c>.mtl</c>, per
+///     <see cref="BatchModelFormat"/>.</description></item>
 ///   <item><description>Everything else (video, xrc, ani, unknown types) is skipped with a
 ///     <see cref="BatchExportResult.SkippedUnsupported"/> event.</description></item>
 /// </list>
@@ -46,6 +50,7 @@ public static class BatchExporter
         VirtualFileSystem vfs,
         string outputDirectory,
         BatchImageFormat imageFormat = BatchImageFormat.Png,
+        BatchModelFormat modelFormat = BatchModelFormat.Glb,
         Action<BatchExportProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
@@ -79,7 +84,7 @@ public static class BatchExporter
             try
             {
                 Directory.CreateDirectory(destinationDir);
-                result = ExportOne(file, vfs, destinationDir, stem, imageFormat);
+                result = ExportOne(file, vfs, destinationDir, stem, imageFormat, modelFormat);
             }
             catch
             {
@@ -99,7 +104,7 @@ public static class BatchExporter
         return new BatchExportSummary(exported, skipped, failed, failedPaths);
     }
 
-    private static BatchExportResult ExportOne(FsNode file, VirtualFileSystem vfs, string destinationDir, string stem, BatchImageFormat imageFormat)
+    private static BatchExportResult ExportOne(FsNode file, VirtualFileSystem vfs, string destinationDir, string stem, BatchImageFormat imageFormat, BatchModelFormat modelFormat)
     {
         string ext = Path.GetExtension(file.Name).ToLowerInvariant();
         string imgExt = imageFormat == BatchImageFormat.Png ? ".png" : ".tga";
@@ -170,12 +175,19 @@ public static class BatchExporter
                 // Look for a same-folder ANI to use as the bind pose so exported CIR characters open
                 // correctly in Blender instead of as a bone-local fragment cloud.
                 AniAnimation? bindPose = TryFindNeighborAni(file, vfs);
-                var options = new GlbWriteOptions
+                if (modelFormat == BatchModelFormat.Obj)
                 {
-                    BindPose = bindPose,
-                    TextureResolver = ModelTextureResolver.Create(vfs, file),
-                };
-                GlbWriter.Write(model, Path.Combine(destinationDir, SanitizeSegment(stem) + ".glb"), options);
+                    ObjWriter.Write(model, Path.Combine(destinationDir, SanitizeSegment(stem) + ".obj"), bindPose);
+                }
+                else
+                {
+                    var options = new GlbWriteOptions
+                    {
+                        BindPose = bindPose,
+                        TextureResolver = ModelTextureResolver.Create(vfs, file),
+                    };
+                    GlbWriter.Write(model, Path.Combine(destinationDir, SanitizeSegment(stem) + ".glb"), options);
+                }
                 return BatchExportResult.Exported;
             }
 
@@ -185,7 +197,10 @@ public static class BatchExporter
                 BiffMesh mesh = BiffMeshReader.Read(s);
                 CirModel cir = BiffToCirAdapter.ToCirModel(mesh);
                 // BIFF props have their transform baked into vertices already — no bind pose needed.
-                GlbWriter.Write(cir, Path.Combine(destinationDir, SanitizeSegment(stem) + ".glb"));
+                if (modelFormat == BatchModelFormat.Obj)
+                    ObjWriter.Write(cir, Path.Combine(destinationDir, SanitizeSegment(stem) + ".obj"));
+                else
+                    GlbWriter.Write(cir, Path.Combine(destinationDir, SanitizeSegment(stem) + ".glb"));
                 return BatchExportResult.Exported;
             }
 
