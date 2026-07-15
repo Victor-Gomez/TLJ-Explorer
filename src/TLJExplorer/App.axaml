@@ -1,8 +1,34 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:services="clr-namespace:TLJExplorer.Services"
              x:Class="TLJExplorer.App"
              RequestedThemeVariant="Dark">
     <Application.Styles>
         <FluentTheme />
     </Application.Styles>
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceInclude Source="avares://TLJExplorer/Assets/Icons/VectorIcons.axaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <services:ResourceKeyToImageConverter x:Key="ResourceKeyToImageConverter"/>
+
+            <!--
+                Avalonia's FluentTheme has no equivalent of WPF Fluent's semantic
+                TextFillColorPrimary/SecondaryBrush tokens, so they're redefined here (same keys, same
+                WinUI/Fluent dark+light values) purely so MainWindow's existing {DynamicResource ...}
+                usages keep working unchanged.
+            -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#C5FFFFFF"/>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#E4000000"/>
+                    <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#9E000000"/>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
 </Application>

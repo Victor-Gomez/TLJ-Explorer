@@ -1,13 +1,13 @@
-<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!--
         Vector replacements for four of the per-type tree icons (image/sound/video/3D-model), converted
         from Lucide SVG icons (stroke="currentColor", fill="none", 24x24 viewBox) copied into this folder.
-        WPF's path mini-language is compatible with SVG path "d" syntax, so each <path> was copied over
-        largely verbatim; <rect>/<circle> became RectangleGeometry/EllipseGeometry. The app is dark-theme
-        only (see App.xaml's ThemeMode="Dark"), so the stroke is hardcoded white rather than following
-        currentColor; there is no light-mode variant to account for.
+        The path mini-language is compatible with SVG path "d" syntax, so each <path> was copied over
+        largely verbatim; <rect>/<circle> became RectangleGeometry/EllipseGeometry. The stroke is
+        hardcoded white rather than following currentColor: there is no light-mode variant of these
+        icons to account for, independent of whichever theme variant (Dark/Light/System) is active.
     -->
     <SolidColorBrush x:Key="TypeIconStroke"
             Color="White"/>
@@ -18,9 +18,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -44,9 +42,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -62,9 +58,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -85,9 +79,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -103,9 +95,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -130,9 +120,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -153,9 +141,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -177,9 +163,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -195,9 +179,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -213,9 +195,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -239,7 +219,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -256,7 +236,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -273,7 +253,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -293,7 +273,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -311,7 +291,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -328,7 +308,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -353,7 +333,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <PathGeometry Figures="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/>
@@ -367,7 +347,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -384,7 +364,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <RectangleGeometry Rect="3,3,18,18" RadiusX="2" RadiusY="2"/>
@@ -402,7 +382,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -419,7 +399,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -440,7 +420,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -457,7 +437,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -474,7 +454,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -492,7 +472,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -509,7 +489,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -527,7 +507,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -544,7 +524,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <PathGeometry Figures="M20 6L9 17L4 12"/>
@@ -558,7 +538,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -575,7 +555,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <PathGeometry Figures="M9 18L15 12L9 6"/>
@@ -589,7 +569,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <PathGeometry Figures="M6 9L12 15L18 9"/>
@@ -603,7 +583,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -621,7 +601,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -640,7 +620,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -657,7 +637,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -674,7 +654,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -692,9 +672,7 @@
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
                     <Pen Brush="{StaticResource TypeIconStroke}"
-                            Thickness="2"
-                            StartLineCap="Round"
-                            EndLineCap="Round"
+                            Thickness="2" LineCap="Round"
                             LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
@@ -720,8 +698,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2"
-                         StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -740,8 +717,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2"
-                         StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
@@ -759,8 +735,7 @@
         <DrawingImage.Drawing>
             <GeometryDrawing Brush="Transparent">
                 <GeometryDrawing.Pen>
-                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2"
-                         StartLineCap="Round" EndLineCap="Round" LineJoin="Round"/>
+                    <Pen Brush="{StaticResource TypeIconStroke}" Thickness="2" LineCap="Round" LineJoin="Round"/>
                 </GeometryDrawing.Pen>
                 <GeometryDrawing.Geometry>
                     <GeometryGroup>
