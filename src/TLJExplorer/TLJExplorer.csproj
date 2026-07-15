@@ -5,8 +5,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Resource Include="Assets\TLJExplorer.ico" />
-    <Resource Include="Assets\Icons\*.ico" />
+    <AvaloniaResource Include="Assets\TLJExplorer.ico" />
+    <AvaloniaResource Include="Assets\Icons\*.ico" />
   </ItemGroup>
 
   <ItemGroup>
@@ -39,20 +39,17 @@
   </PropertyGroup>
 
   <!--
-    Avalonia migration in progress (branch: avalonia-migration). These still reference WPF
-    (System.Windows.*) and are excluded from the build until ported; MainWindow.xaml/.xaml.cs and
-    friends are kept around as a porting reference and deleted once their .axaml replacements land.
+    Avalonia migration in progress (branch: avalonia-migration). Services/, Rendering/, and ViewModels/
+    are ported (Phase 1); Views/ (GlModelViewerHost, CommandPaletteWindow, SettingsPanel) and
+    MainWindow.xaml/.xaml.cs still reference WPF (System.Windows.*) and are excluded from the build
+    until their turn (Phase 3, 4, 7), kept around as a porting reference until then.
     See C:\Users\victor\.claude\plans\rosy-crunching-possum.md for the phase plan.
   -->
   <ItemGroup>
     <Compile Remove="MainWindow.xaml.cs" />
-    <Compile Remove="Views\**\*.cs" />
-    <Compile Remove="Rendering\**\*.cs" />
-    <Compile Remove="ViewModels\**\*.cs" />
-    <Compile Remove="Services\**\*.cs" />
-    <!-- Framework-agnostic already; kept in the build throughout the migration. -->
-    <Compile Include="Services\Logger.cs" />
-    <Compile Include="Services\TempFileTracker.cs" />
+    <Compile Remove="Views\GlModelViewerHost.cs" />
+    <Compile Remove="Views\CommandPaletteWindow.xaml.cs" />
+    <Compile Remove="Views\SettingsPanel.xaml.cs" />
   </ItemGroup>
 
 </Project>

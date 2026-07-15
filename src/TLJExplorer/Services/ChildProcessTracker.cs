@@ -1,34 +1,83 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 
 namespace TLJExplorer.Services;
 
 /// <summary>
-/// Assigns child processes (e.g. <c>ffmpeg.exe</c>) to a Windows Job Object flagged with
-/// <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c>. When this app's process handle is closed -- whether via a
-/// clean exit, an unhandled exception, or Task Manager -- the kernel automatically terminates every
-/// process still in the job. Prevents orphaned <c>ffmpeg.exe</c> instances after abnormal shutdown.
+/// Makes sure child processes (e.g. <c>ffmpeg</c>) don't outlive this app.
 /// </summary>
+/// <remarks>
+/// On Windows, processes are assigned to a Job Object flagged with <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c>:
+/// when this app's process handle is closed -- whether via a clean exit, an unhandled exception, or Task
+/// Manager -- the kernel automatically terminates every process still in the job. There's no equivalent
+/// kernel primitive on Linux/macOS, so elsewhere we just track the processes ourselves and kill them on
+/// <see cref="AppDomain.ProcessExit"/>; ffmpeg invocations here are short-lived (transcode-then-exit)
+/// rather than long-running daemons, so "best-effort kill on our own exit" covers the same crash/Task
+/// Manager cases the Job Object does on Windows.
+/// </remarks>
 public static class ChildProcessTracker
 {
-    private static readonly IntPtr JobHandle = CreateAndConfigureJob();
+    private static readonly IntPtr JobHandle = OperatingSystem.IsWindows() ? CreateAndConfigureJob() : IntPtr.Zero;
+    private static readonly object FallbackGate = new();
+    private static readonly List<Process> FallbackTracked = [];
 
-    /// <summary>Adds a running <paramref name="process"/> to the kill-on-close job.</summary>
+    static ChildProcessTracker()
+    {
+        if (!OperatingSystem.IsWindows())
+            AppDomain.CurrentDomain.ProcessExit += (_, _) => KillFallbackTracked();
+    }
+
+    /// <summary>Adds a running <paramref name="process"/> to the kill-on-close job (or the fallback tracked list).</summary>
     public static void AddProcess(Process process)
     {
-        if (JobHandle == IntPtr.Zero || process.HasExited)
+        if (process.HasExited)
             return;
 
-        try
+        if (OperatingSystem.IsWindows())
         {
-            AssignProcessToJobObject(JobHandle, process.Handle);
+            if (JobHandle == IntPtr.Zero)
+                return;
+            try
+            {
+                AssignProcessToJobObject(JobHandle, process.Handle);
+            }
+            catch
+            {
+                // Best-effort; on failure the process simply won't get auto-killed.
+            }
+            return;
         }
-        catch
+
+        lock (FallbackGate)
+            FallbackTracked.Add(process);
+    }
+
+    private static void KillFallbackTracked()
+    {
+        lock (FallbackGate)
         {
-            // Best-effort; on failure the process simply won't get auto-killed.
+            foreach (Process p in FallbackTracked)
+            {
+                try
+                {
+                    if (!p.HasExited)
+                        p.Kill(entireProcessTree: true);
+                }
+                catch
+                {
+                    // Best-effort on shutdown.
+                }
+            }
+            FallbackTracked.Clear();
         }
     }
 
+    // -------------------------------------------------------------------------------------------
+    // Win32 interop
+    // -------------------------------------------------------------------------------------------
+
+    [SupportedOSPlatform("windows")]
     private static IntPtr CreateAndConfigureJob()
     {
         IntPtr job = CreateJobObject(IntPtr.Zero, null);
@@ -52,10 +101,6 @@ public static class ChildProcessTracker
 
         return job;
     }
-
-    // -------------------------------------------------------------------------------------------
-    // Win32 interop
-    // -------------------------------------------------------------------------------------------
 
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
     private const int JobObjectExtendedLimitInformation = 9;

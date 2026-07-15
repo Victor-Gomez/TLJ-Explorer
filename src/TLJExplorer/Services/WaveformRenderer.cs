@@ -1,6 +1,6 @@
 using System.IO;
-using System.Windows;
-using System.Windows.Media;
+using Avalonia;
+using Avalonia.Media;
 
 namespace TLJExplorer.Services;
 
@@ -14,8 +14,8 @@ namespace TLJExplorer.Services;
 /// <list type="number">
 ///   <item><description><see cref="SamplePeaks"/> reads the WAV, downsamples to a fixed peak count.
 ///     Pure I/O + arithmetic, safe from a <c>Task.Run</c> worker.</description></item>
-///   <item><description><see cref="Render"/> materialises those peaks into a WPF
-///     <see cref="ImageSource"/>. Must run on the UI thread (constructs <c>DispatcherObject</c>s).</description></item>
+///   <item><description><see cref="Render"/> materialises those peaks into an
+///     <see cref="IImage"/>. Must run on the UI thread.</description></item>
 /// </list>
 /// The whole strip is emitted as a vector <see cref="DrawingImage"/> rather than a raster bitmap, so it
 /// stays crisp when the sound panel is resized and doesn't need a fixed pixel size at render time.
@@ -71,14 +71,13 @@ public static class WaveformRenderer
     }
 
     /// <summary>
-    /// Builds a vector waveform drawing from pre-sampled peaks. Call on the UI thread; the returned
-    /// <see cref="ImageSource"/> is frozen and safe to hand to a WPF <c>Image</c>.
+    /// Builds a vector waveform drawing from pre-sampled peaks. Call on the UI thread.
     /// </summary>
     /// <param name="peaks">Per-bar amplitudes in <c>[0, 1]</c>.</param>
     /// <param name="foreground">Bar colour. Alpha respected.</param>
     /// <param name="canvasHeight">Height of the drawing's viewbox; determines bar heights.</param>
     /// <param name="canvasWidth">Width of the drawing's viewbox; determines bar spacing.</param>
-    public static ImageSource? Render(float[] peaks, Color foreground, double canvasWidth = 800, double canvasHeight = 48, int? barCount = null)
+    public static IImage? Render(float[] peaks, Color foreground, double canvasWidth = 800, double canvasHeight = 48, int? barCount = null)
     {
         if (peaks is null || peaks.Length == 0 || canvasWidth <= 0 || canvasHeight <= 0)
             return null;
@@ -100,16 +99,13 @@ public static class WaveformRenderer
         double step = canvasWidth / displayPeaks.Length;
 
         var brush = new SolidColorBrush(foreground);
-        brush.Freeze();
 
         var pen = new Pen(brush, BarThickness)
         {
-            StartLineCap = PenLineCap.Round,
-            EndLineCap = PenLineCap.Round,
+            LineCap = PenLineCap.Round,
         };
-        pen.Freeze();
 
-        var geometry = new GeometryGroup { FillRule = FillRule.Nonzero };
+        var geometry = new GeometryGroup { FillRule = FillRule.NonZero };
         for (int i = 0; i < displayPeaks.Length; i++)
         {
             double x = (i + 0.5) * step;
@@ -118,14 +114,10 @@ public static class WaveformRenderer
                 new Point(x, centerY - halfLen),
                 new Point(x, centerY + halfLen)));
         }
-        geometry.Freeze();
 
         var drawing = new GeometryDrawing { Geometry = geometry, Pen = pen };
-        drawing.Freeze();
 
-        var image = new DrawingImage(drawing);
-        image.Freeze();
-        return image;
+        return new DrawingImage(drawing);
     }
 
     /// <summary>
@@ -157,7 +149,7 @@ public static class WaveformRenderer
     /// <see cref="ImageSource"/> on the current UI thread. Prefer the split
     /// <see cref="SamplePeaks"/> + <see cref="Render"/> pair for busy contexts.
     /// </summary>
-    public static ImageSource? RenderFromFile(string wavPath, Color foreground, double canvasWidth = 800, double canvasHeight = 48)
+    public static IImage? RenderFromFile(string wavPath, Color foreground, double canvasWidth = 800, double canvasHeight = 48)
     {
         float[] peaks = SamplePeaks(wavPath);
         return Render(peaks, foreground, canvasWidth, canvasHeight);

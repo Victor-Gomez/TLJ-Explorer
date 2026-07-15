@@ -1,6 +1,5 @@
 using System.IO;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using Avalonia.Media.Imaging;
 using TLJExplorer.Services;
 using TLJExplorer.Core.FileSystem;
 using TLJExplorer.Core.Formats;
@@ -9,7 +8,7 @@ using TLJExplorer.Core.Settings;
 namespace TLJExplorer.Rendering;
 
 /// <summary>
-/// Composites the layers of an <see cref="XrcSceneModel"/> scene into a base <see cref="BitmapSource"/>
+/// Composites the layers of an <see cref="XrcSceneModel"/> scene into a base <see cref="Bitmap"/>
 /// (backdrop + static XMG/TM sprites) plus a set of animated overlays (frame-per-PNG sequences extracted
 /// from the scene's Bink/Smacker layers by ffmpeg). The base is rendered once; overlays are handed off
 /// to the UI to cycle on a timer.
@@ -18,7 +17,7 @@ public static class SceneComposer
 {
     /// <summary>Result of composing a scene: the flat base bitmap plus zero or more animated overlays.</summary>
     public sealed record Composition(
-        BitmapSource Base,
+        Bitmap Base,
         IReadOnlyList<SceneAnimatedOverlay> Overlays);
 
     /// <summary>
@@ -99,9 +98,7 @@ public static class SceneComposer
             }
         }
 
-        BitmapSource bitmap = BitmapSource.Create(
-            width, height, 96, 96, PixelFormats.Bgra32, null, canvas, width * 4);
-        bitmap.Freeze();
+        Bitmap bitmap = PngWriter.ToBitmap(new DecodedImage(width, height, canvas));
         return new Composition(bitmap, overlays);
     }
 
@@ -169,18 +166,9 @@ public static class SceneComposer
             if (!result.Success || result.FramePaths.Count == 0)
                 return null;
 
-            var frames = new List<BitmapSource>(result.FramePaths.Count);
+            var frames = new List<Bitmap>(result.FramePaths.Count);
             foreach (string path in result.FramePaths)
-            {
-                var image = new BitmapImage();
-                image.BeginInit();
-                image.CacheOption = BitmapCacheOption.OnLoad;
-                image.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
-                image.UriSource = new Uri(path);
-                image.EndInit();
-                image.Freeze();
-                frames.Add(image);
-            }
+                frames.Add(new Bitmap(path));
 
             return new SceneAnimatedOverlay(layer.Name, layer.X, layer.Y, frames, result.Fps);
         }

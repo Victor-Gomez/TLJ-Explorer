@@ -14,8 +14,8 @@ public readonly record struct TranscodeResult(string? OutputPath, string? ErrorD
 }
 
 /// <summary>
-/// Runs the bundled <c>ffmpeg.exe</c> to transcode a source video to an MP4 that WPF's MediaElement can
-/// play natively via Media Foundation.
+/// Runs the bundled ffmpeg executable to transcode a source video to an MP4 the app's video player can
+/// play natively.
 /// </summary>
 public static class FfmpegTranscoder
 {
@@ -31,7 +31,7 @@ public static class FfmpegTranscoder
         string overlayColor = "202020")
     {
         if (!File.Exists(ffmpegPath))
-            return TranscodeResult.Failed($"ffmpeg.exe not found at:\n{ffmpegPath}");
+            return TranscodeResult.Failed($"ffmpeg not found at:\n{ffmpegPath}");
 
         string outputPath = tempFiles.CreateTempFile(".mp4");
 
@@ -96,7 +96,7 @@ public static class FfmpegTranscoder
         {
             using var process = Process.Start(psi);
             if (process is null)
-                return TranscodeResult.Failed("Failed to start ffmpeg.exe (Process.Start returned null).");
+                return TranscodeResult.Failed("Failed to start ffmpeg (Process.Start returned null).");
 
             // Ensure the child dies with the parent if the app crashes or is killed mid-transcode.
             ChildProcessTracker.AddProcess(process);
@@ -147,7 +147,7 @@ public static class FfmpegTranscoder
         double fallbackFps = 15.0)
     {
         if (!File.Exists(ffmpegPath))
-            return FrameExtractResult.Failed($"ffmpeg.exe not found at:\n{ffmpegPath}");
+            return FrameExtractResult.Failed($"ffmpeg not found at:\n{ffmpegPath}");
 
         string outputPattern = Path.Combine(outputDirectory, "frame_%05d.png");
 
@@ -174,7 +174,7 @@ public static class FfmpegTranscoder
         {
             using var process = Process.Start(psi);
             if (process is null)
-                return FrameExtractResult.Failed("Failed to start ffmpeg.exe (Process.Start returned null).");
+                return FrameExtractResult.Failed("Failed to start ffmpeg (Process.Start returned null).");
 
             ChildProcessTracker.AddProcess(process);
 

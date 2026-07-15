@@ -1,5 +1,4 @@
 using System.IO;
-using System.Windows.Media.Imaging;
 using TLJExplorer.Rendering;
 using TLJExplorer.Core.FileSystem;
 using TLJExplorer.Core.Formats;

@@ -1,4 +1,5 @@
 using System.IO;
+using Avalonia.Threading;
 using TLJExplorer.Core.FileSystem;
 
 namespace TLJExplorer.Services;
@@ -18,18 +19,18 @@ public enum ModChangeKind { Added, Updated, Removed }
 /// </summary>
 /// <remarks>
 /// One <see cref="FileSystemWatcher"/> per <c>xarc/</c> directory (there are typically only a few dozen).
-/// Change events are marshaled onto <see cref="System.Windows.Threading.Dispatcher"/> before the callback
-/// runs, so consumers can safely touch UI state.
+/// Change events are marshaled onto <see cref="Dispatcher"/> before the callback runs, so consumers can
+/// safely touch UI state.
 /// </remarks>
 public sealed class ModFolderWatcher : IDisposable
 {
     private readonly VirtualFileSystem _vfs;
-    private readonly System.Windows.Threading.Dispatcher _dispatcher;
+    private readonly Dispatcher _dispatcher;
     private readonly Action<ModChangeNotification> _onChange;
     private readonly List<FileSystemWatcher> _watchers = [];
     private readonly Dictionary<string, FsNode> _byAbsolutePath = new(StringComparer.OrdinalIgnoreCase);
 
-    public ModFolderWatcher(VirtualFileSystem vfs, System.Windows.Threading.Dispatcher dispatcher, Action<ModChangeNotification> onChange)
+    public ModFolderWatcher(VirtualFileSystem vfs, Dispatcher dispatcher, Action<ModChangeNotification> onChange)
     {
         _vfs = vfs;
         _dispatcher = dispatcher;
@@ -119,11 +120,11 @@ public sealed class ModFolderWatcher : IDisposable
         // FileSystemWatcher fires many "Changed" events during a single file save (Windows often reports
         // 2-3 in a row as editors rewrite the file). Update the FsNode either way — the value is
         // idempotent — but marshal to the UI thread once per event.
-        _dispatcher.BeginInvoke(new Action(() =>
+        _dispatcher.Post(() =>
         {
             node.ModPath = kind == ModChangeKind.Removed ? null : path;
             _onChange(new ModChangeNotification(node, kind));
-        }));
+        });
     }
 
     public void Dispose()

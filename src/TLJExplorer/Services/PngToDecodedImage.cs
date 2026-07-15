@@ -1,6 +1,8 @@
 using System.IO;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using System.Runtime.InteropServices;
+using Avalonia;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using TLJExplorer.Core.Formats;
 
 namespace TLJExplorer.Services;
@@ -27,21 +29,38 @@ public static class PngToDecodedImage
     }
 
     /// <summary>
-    /// Decodes a PNG stream into a <see cref="DecodedImage"/> (BGRA32). Passes through WPF's built-in
-    /// <see cref="PngBitmapDecoder"/> because our Core library deliberately doesn't ship a PNG codec.
+    /// Decodes a PNG stream into a <see cref="DecodedImage"/> (BGRA32). Passes through Avalonia's
+    /// Skia-backed <see cref="Bitmap"/> decoder because our Core library deliberately doesn't ship a PNG
+    /// codec, then transcodes into a Bgra32/Unpremul framebuffer regardless of the PNG's native pixel
+    /// format (paletted, grayscale, RGB, ...).
     /// </summary>
     public static DecodedImage Decode(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
 
-        var decoder = new PngBitmapDecoder(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-        BitmapFrame frame = decoder.Frames[0];
-        var converted = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
+        using var bitmap = new Bitmap(stream);
+        using var target = new WriteableBitmap(bitmap.PixelSize, bitmap.Dpi, PixelFormat.Bgra8888, AlphaFormat.Unpremul);
 
-        int stride = converted.PixelWidth * 4;
-        var pixels = new byte[stride * converted.PixelHeight];
-        converted.CopyPixels(pixels, stride, 0);
-        return new DecodedImage(converted.PixelWidth, converted.PixelHeight, pixels);
+        int width = bitmap.PixelSize.Width;
+        int height = bitmap.PixelSize.Height;
+        int stride = width * 4;
+        var pixels = new byte[stride * height];
+
+        using (var fb = target.Lock())
+        {
+            bitmap.CopyPixels(fb, AlphaFormat.Unpremul);
+            if (fb.RowBytes == stride)
+            {
+                Marshal.Copy(fb.Address, pixels, 0, pixels.Length);
+            }
+            else
+            {
+                for (int y = 0; y < height; y++)
+                    Marshal.Copy(fb.Address + y * fb.RowBytes, pixels, y * stride, stride);
+            }
+        }
+
+        return new DecodedImage(width, height, pixels);
     }
 
     /// <summary>

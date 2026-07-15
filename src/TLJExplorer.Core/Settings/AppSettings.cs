@@ -33,11 +33,12 @@ public sealed class AppSettings
     public bool HighQuality { get; set; }
 
     /// <summary>
-    /// Full path to the <c>ffmpeg.exe</c> executable, used to transcode Smacker (.sss) and Bink (.bbb)
-    /// videos to MP4 on demand so they can play in the app's embedded WPF MediaElement. Defaults to the
-    /// <c>ffmpeg\ffmpeg.exe</c> subfolder next to the app's own exe.
+    /// Full path to the ffmpeg executable, used to transcode Smacker (.sss) and Bink (.bbb) videos to MP4
+    /// on demand so they can play in the app's embedded video player. Defaults to the <c>ffmpeg</c>
+    /// subfolder next to the app's own executable (<c>ffmpeg.exe</c> on Windows, <c>ffmpeg</c> elsewhere).
     /// </summary>
-    public string FfmpegPath { get; set; } = Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe");
+    public string FfmpegPath { get; set; } = Path.Combine(
+        AppContext.BaseDirectory, "ffmpeg", OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg");
 
     /// <summary>Whether to strip the chroma-key background (default: cyan) from video cutscenes.</summary>
     public bool RemoveVideoBackground { get; set; }
