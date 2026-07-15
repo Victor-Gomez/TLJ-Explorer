@@ -39,15 +39,14 @@
   </PropertyGroup>
 
   <!--
-    Avalonia migration in progress (branch: avalonia-migration). Services/, Rendering/, and ViewModels/
-    are ported (Phase 1); Views/ (GlModelViewerHost, CommandPaletteWindow, SettingsPanel) and
+    Avalonia migration in progress (branch: avalonia-migration). Services/, Rendering/, ViewModels/, and
+    Views/GlModelViewerHost.cs are ported (Phases 1-3); CommandPaletteWindow/SettingsPanel and
     MainWindow.xaml/.xaml.cs still reference WPF (System.Windows.*) and are excluded from the build
-    until their turn (Phase 3, 4, 7), kept around as a porting reference until then.
+    until their turn (Phase 4, 7), kept around as a porting reference until then.
     See C:\Users\victor\.claude\plans\rosy-crunching-possum.md for the phase plan.
   -->
   <ItemGroup>
     <Compile Remove="MainWindow.xaml.cs" />
-    <Compile Remove="Views\GlModelViewerHost.cs" />
     <Compile Remove="Views\CommandPaletteWindow.xaml.cs" />
     <Compile Remove="Views\SettingsPanel.xaml.cs" />
   </ItemGroup>

@@ -1,9 +1,11 @@
 using System.Numerics;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using System.Runtime.InteropServices;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Silk.NET.Maths;
 using TLJExplorer.Rendering;
 using TLJExplorer.Core.Formats;
@@ -11,7 +13,7 @@ using TLJExplorer.Core.Formats;
 namespace TLJExplorer.Views;
 
 /// <summary>
-/// WPF control that hosts a 3D render of a <see cref="CirModel"/> via <see cref="ModelRenderer"/>. The GL
+/// Avalonia control that hosts a 3D render of a <see cref="CirModel"/> via <see cref="ModelRenderer"/>. The GL
 /// context renders offscreen into an FBO and the resulting pixels are blitted into a <see cref="WriteableBitmap"/>
 /// on demand (see <see cref="ModelRenderer"/> for the rationale). Left-drag orbits, right-drag pans, wheel zooms.
 /// </summary>
@@ -23,15 +25,15 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
     private const float MinPitch = -1.55f;
     private const float MaxPitch = 1.55f;
 
-    private readonly Image _image = new() { Stretch = Stretch.Uniform, SnapsToDevicePixels = true };
+    private readonly Image _image = new() { Stretch = Stretch.Uniform };
     private readonly ModelRenderer _renderer = new();
 
     private WriteableBitmap? _bitmap;
     private bool _hasModel;
     private bool _dirty;
-    private bool _renderingHooked;
+    private bool _frameLoopActive;
 
-    private Point? _lastMousePos;
+    private Point? _lastPointerPos;
     private bool _orbiting;
     private bool _panning;
 
@@ -40,8 +42,8 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
     private float _distance = 5f;
     private Vector3D<float> _target = Vector3D<float>.Zero;
 
-    // _timeMs advances from CompositionTarget.Rendering's RenderingTime (WPF's frame clock) so playback
-    // stays synchronized with the rest of WPF's animation system.
+    // _timeMs advances from the compositor's per-frame RequestAnimationFrame timestamp so playback stays
+    // synchronized with the rest of Avalonia's animation system.
     private CirModel? _model;
     private AniAnimation? _animation;
     private float _timeMs;
@@ -56,35 +58,34 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         Background = Brushes.Transparent;
         Content = _image;
 
-        MouseLeftButtonDown += OnLeftButtonDown;
-        MouseLeftButtonUp += OnLeftButtonUp;
-        MouseRightButtonDown += OnRightButtonDown;
-        MouseRightButtonUp += OnRightButtonUp;
-        MouseMove += OnMouseMove;
-        MouseWheel += OnMouseWheel;
-        LostMouseCapture += (_, _) => { _orbiting = false; _panning = false; _lastMousePos = null; };
+        PointerPressed += OnPointerPressed;
+        PointerReleased += OnPointerReleased;
+        PointerMoved += OnPointerMoved;
+        PointerWheelChanged += OnPointerWheelChanged;
+        PointerCaptureLost += (_, _) => { _orbiting = false; _panning = false; _lastPointerPos = null; };
 
         SizeChanged += (_, _) => RequestRedraw();
-        Loaded += (_, _) => HookCompositionRendering();
-        Unloaded += (_, _) => UnhookCompositionRendering();
+        Loaded += (_, _) => HookFrameLoop();
+        Unloaded += (_, _) => UnhookFrameLoop();
     }
 
-    private void HookCompositionRendering()
+    private void HookFrameLoop()
     {
-        if (_renderingHooked)
+        if (_frameLoopActive)
             return;
 
-        CompositionTarget.Rendering += OnCompositionTargetRendering;
-        _renderingHooked = true;
+        _frameLoopActive = true;
+        RequestNextFrame();
     }
 
-    private void UnhookCompositionRendering()
+    private void UnhookFrameLoop() => _frameLoopActive = false;
+
+    private void RequestNextFrame()
     {
-        if (!_renderingHooked)
+        if (!_frameLoopActive)
             return;
 
-        CompositionTarget.Rendering -= OnCompositionTargetRendering;
-        _renderingHooked = false;
+        TopLevel.GetTopLevel(this)?.RequestAnimationFrame(OnFrame);
     }
 
     /// <summary>Uploads <paramref name="model"/>'s geometry and frames the orbit camera around it.</summary>
@@ -96,7 +97,7 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
 
         ClearAnimationState();
 
-        // Force a fresh WriteableBitmap on the next render, otherwise WPF's Image control can render stale
+        // Force a fresh WriteableBitmap on the next render, otherwise the Image control can render stale
         // content across a model swap.
         _bitmap = null;
         _image.Source = null;
@@ -146,12 +147,12 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
 
     /// <summary>
     /// Renders the current model at native panel resolution and returns a top-down BGRA32 pixel buffer.
-    /// Useful for saving a screenshot at the display's actual size regardless of WPF DPI scaling.
+    /// Useful for saving a screenshot at the display's actual size regardless of Avalonia DPI scaling.
     /// </summary>
     public byte[]? RenderCurrentFrameToBytes(out int width, out int height)
     {
-        width = Math.Max(1, (int)Math.Round(ActualWidth));
-        height = Math.Max(1, (int)Math.Round(ActualHeight));
+        width = Math.Max(1, (int)Math.Round(Bounds.Width));
+        height = Math.Max(1, (int)Math.Round(Bounds.Height));
         if (!_hasModel || width <= 1 || height <= 1)
             return null;
         var camera = new OrbitCamera(_target, _yaw, _pitch, _distance);
@@ -298,14 +299,16 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
 
     private void RequestRedraw() => _dirty = true;
 
-    private void OnCompositionTargetRendering(object? sender, EventArgs e)
+    private void OnFrame(TimeSpan renderingTime)
     {
-        if (_isPlaying && _animation is not null && e is RenderingEventArgs renderingArgs)
+        if (!_frameLoopActive)
+            return;
+
+        if (_isPlaying && _animation is not null)
         {
-            TimeSpan now = renderingArgs.RenderingTime;
             if (_lastRenderingTime is { } last)
             {
-                double deltaMs = (now - last).TotalMilliseconds;
+                double deltaMs = (renderingTime - last).TotalMilliseconds;
                 if (deltaMs > 0)
                 {
                     _timeMs += (float)deltaMs;
@@ -314,84 +317,97 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
                 }
             }
 
-            _lastRenderingTime = now;
+            _lastRenderingTime = renderingTime;
         }
-
-        if (!_dirty)
-            return;
 
         // Only clear _dirty when a frame actually rendered, so a zero-size layout pass retries next tick
         // instead of sitting blank until some other event calls RequestRedraw().
-        if (TryRenderNow())
+        if (_dirty && TryRenderNow())
             _dirty = false;
+
+        RequestNextFrame();
     }
 
     /// <summary>Renders and blits one frame. Returns <see langword="false"/> when the panel has no valid
-    /// layout size yet; the caller uses this to retry on the next composition tick.</summary>
-    private bool TryRenderNow()
+    /// layout size yet; the caller uses this to retry on the next frame.</summary>
+    private unsafe bool TryRenderNow()
     {
         if (!_hasModel)
             return true;
 
-        int width = Math.Max(1, (int)Math.Round(ActualWidth));
-        int height = Math.Max(1, (int)Math.Round(ActualHeight));
+        int width = Math.Max(1, (int)Math.Round(Bounds.Width));
+        int height = Math.Max(1, (int)Math.Round(Bounds.Height));
         if (width <= 1 || height <= 1)
             return false;
 
         var camera = new OrbitCamera(_target, _yaw, _pitch, _distance);
         byte[] pixels = _renderer.RenderFrame(width, height, camera);
 
-        if (_bitmap is null || _bitmap.PixelWidth != width || _bitmap.PixelHeight != height)
+        if (_bitmap is null || _bitmap.PixelSize.Width != width || _bitmap.PixelSize.Height != height)
         {
-            _bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
+            _bitmap = new WriteableBitmap(new PixelSize(width, height), new Avalonia.Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Unpremul);
             _image.Source = _bitmap;
         }
 
-        _bitmap.WritePixels(new Int32Rect(0, 0, width, height), pixels, width * 4, 0);
+        int stride = width * 4;
+        using (ILockedFramebuffer fb = _bitmap.Lock())
+        {
+            if (fb.RowBytes == stride)
+            {
+                Marshal.Copy(pixels, 0, fb.Address, pixels.Length);
+            }
+            else
+            {
+                for (int y = 0; y < height; y++)
+                    Marshal.Copy(pixels, y * stride, fb.Address + (y * fb.RowBytes), stride);
+            }
+        }
+
+        _image.InvalidateVisual();
         return true;
     }
 
     // -----------------------------------------------------------------------------------------------
-    // Mouse-driven orbit camera
+    // Pointer-driven orbit camera
     // -----------------------------------------------------------------------------------------------
 
-    private void OnLeftButtonDown(object sender, MouseButtonEventArgs e)
+    private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        _orbiting = true;
-        _lastMousePos = e.GetPosition(this);
-        CaptureMouse();
+        PointerUpdateKind kind = e.GetCurrentPoint(this).Properties.PointerUpdateKind;
+        if (kind == PointerUpdateKind.LeftButtonPressed)
+        {
+            _orbiting = true;
+            _lastPointerPos = e.GetPosition(this);
+            e.Pointer.Capture(this);
+        }
+        else if (kind == PointerUpdateKind.RightButtonPressed)
+        {
+            _panning = true;
+            _lastPointerPos = e.GetPosition(this);
+            e.Pointer.Capture(this);
+        }
     }
 
-    private void OnLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        _orbiting = false;
-        if (!_panning)
-            ReleaseMouseCapture();
+        if (e.InitialPressMouseButton == MouseButton.Left)
+            _orbiting = false;
+        else if (e.InitialPressMouseButton == MouseButton.Right)
+            _panning = false;
+
+        if (!_orbiting && !_panning)
+            e.Pointer.Capture(null);
     }
 
-    private void OnRightButtonDown(object sender, MouseButtonEventArgs e)
+    private void OnPointerMoved(object? sender, PointerEventArgs e)
     {
-        _panning = true;
-        _lastMousePos = e.GetPosition(this);
-        CaptureMouse();
-    }
-
-    private void OnRightButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        _panning = false;
-        if (!_orbiting)
-            ReleaseMouseCapture();
-    }
-
-    private void OnMouseMove(object sender, MouseEventArgs e)
-    {
-        if (_lastMousePos is not { } last || (!_orbiting && !_panning))
+        if (_lastPointerPos is not { } last || (!_orbiting && !_panning))
             return;
 
         Point pos = e.GetPosition(this);
         double dx = pos.X - last.X;
         double dy = pos.Y - last.Y;
-        _lastMousePos = pos;
+        _lastPointerPos = pos;
 
         if (_orbiting)
         {
@@ -402,9 +418,9 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         else if (_panning)
         {
             var camera = new OrbitCamera(_target, _yaw, _pitch, _distance);
-            Vector3D<float> viewDir = Vector3D.Normalize(camera.Target - camera.Eye);
-            Vector3D<float> right = Vector3D.Normalize(Vector3D.Cross(viewDir, Vector3D<float>.UnitY));
-            Vector3D<float> up = Vector3D.Cross(right, viewDir);
+            Vector3D<float> viewDir = Silk.NET.Maths.Vector3D.Normalize(camera.Target - camera.Eye);
+            Vector3D<float> right = Silk.NET.Maths.Vector3D.Normalize(Silk.NET.Maths.Vector3D.Cross(viewDir, Vector3D<float>.UnitY));
+            Vector3D<float> up = Silk.NET.Maths.Vector3D.Cross(right, viewDir);
 
             float panScale = _distance * PanSensitivityFactor;
             _target -= right * ((float)dx * panScale);
@@ -413,9 +429,9 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         }
     }
 
-    private void OnMouseWheel(object sender, MouseWheelEventArgs e)
+    private void OnPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
-        _distance = e.Delta > 0 ? _distance / ZoomStep : _distance * ZoomStep;
+        _distance = e.Delta.Y > 0 ? _distance / ZoomStep : _distance * ZoomStep;
         _distance = Math.Max(0.001f, _distance);
         RequestRedraw();
         e.Handled = true;
@@ -423,9 +439,9 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
 
     public void Dispose()
     {
-        // Guard the composition unhook so any failure there can't skip renderer disposal — the
+        // Guard the frame-loop unhook so any failure there can't skip renderer disposal — the
         // renderer owns a hidden GLFW window whose thread will keep the process alive if leaked.
-        try { UnhookCompositionRendering(); } catch { }
+        try { UnhookFrameLoop(); } catch { }
         _renderer.Dispose();
     }
 }
