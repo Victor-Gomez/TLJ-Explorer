@@ -1,0 +1,15 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TLJExplorer.MainWindow"
+        Title="TLJ Explorer"
+        Width="1280" Height="800">
+    <!--
+        Placeholder shell for the Avalonia migration (Phase 0). The real UI is ported from
+        MainWindow.xaml/.xaml.cs (kept alongside as a reference, excluded from the build) in Phase 4.
+    -->
+    <Grid>
+        <TextBlock Text="TLJ Explorer — Avalonia scaffold. MainWindow port lands in Phase 4."
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center" />
+    </Grid>
+</Window>
