@@ -295,6 +295,11 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        // Fire-and-forget: now that the window itself has loaded, warm up the native engines the sound/
+        // video/3D panels need in the background so opening the first asset doesn't pay for it -- rather
+        // than deferring that cost all the way out to the user's first click.
+        WarmUpMediaAndRendererEngines();
+
         if (!string.IsNullOrWhiteSpace(_settings.BaseDir))
         {
             await InitVfsAsync(_settings.BaseDir);
@@ -303,6 +308,34 @@ public partial class MainWindow : Window
         {
             SetStatus("No TLJ install selected. Use File -> Select TLJ Install Folder...");
         }
+    }
+
+    /// <summary>
+    /// Kicks off background construction of the LibVLC engine/players and the 3D viewer's OpenGL context
+    /// so they're ready by the time the user actually opens a sound/video/model resource, instead of
+    /// stalling that first click. Deliberately NOT run from the constructor -- doing it there would delay
+    /// showing the window itself, which is the whole point of making these lazy in the first place.
+    /// </summary>
+    private void WarmUpMediaAndRendererEngines()
+    {
+        _ = Task.Run(() =>
+        {
+            // The expensive part -- native libvlc plugin discovery/engine init -- has no UI-thread
+            // affinity requirement and is safe to do off-thread (LibVlcRuntime's Lazy<LibVLC> is
+            // thread-safe). Only materializing the LibVlcMediaPlayer wrappers (cheap once the engine is
+            // hot) needs to happen back on the UI thread, since attaching one to VideoView is UI-affine.
+            _ = LibVlcRuntime.Shared;
+            Dispatcher.UIThread.Post(() =>
+            {
+                _ = _mediaPlayer;
+                _ = _videoPlayer;
+            });
+        });
+
+        // The GL context is created via GLFW on whichever thread calls it, same as every other GL call
+        // in this app (OnFrame's per-frame render already runs on the UI thread) -- so warm it up there
+        // too, just at a low enough priority that the window's first paint isn't held up waiting for it.
+        ModelViewerHost.WarmUp();
     }
 
     // ---------------------------------------------------------------------

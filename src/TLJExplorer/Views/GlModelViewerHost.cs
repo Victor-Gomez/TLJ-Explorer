@@ -6,6 +6,7 @@ using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Threading;
 using Silk.NET.Maths;
 using TLJExplorer.Rendering;
 using TLJExplorer.Core.Formats;
@@ -100,6 +101,14 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
 
         TopLevel.GetTopLevel(this)?.RequestAnimationFrame(OnFrame);
     }
+
+    /// <summary>
+    /// Schedules construction of the (expensive: hidden GLFW window + OpenGL context) renderer at
+    /// Background dispatcher priority, so it happens after the current UI frame has been rendered rather
+    /// than stealing time from it. Call once, shortly after the owning window has loaded -- the goal is to
+    /// have the renderer ready by the time the user actually opens a model, without delaying first paint.
+    /// </summary>
+    public void WarmUp() => Dispatcher.UIThread.Post(() => _ = Renderer, DispatcherPriority.Background);
 
     /// <summary>Uploads <paramref name="model"/>'s geometry and frames the orbit camera around it.</summary>
     public void LoadModel(CirModel model)
