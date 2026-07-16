@@ -1,25 +1,27 @@
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using TLJExplorer.Core.FileSystem;
 
 namespace TLJExplorer.Views;
 
 /// <summary>
 /// Modal quick-open dialog: fuzzy-matches every file in the VFS against the query and returns the chosen
-/// node via <see cref="SelectedNode"/>. Enter opens the highlighted match, Esc cancels, ↑/↓ move
-/// selection while focus stays in the query box (VS Code style).
+/// node via <see cref="Window.Close(object?)"/>. Enter opens the highlighted match, Esc cancels, up/down
+/// move selection while focus stays in the query box (VS Code style).
 /// </summary>
 public partial class CommandPaletteWindow : Window
 {
     private readonly List<PaletteEntry> _allEntries;
 
-    public FsNode? SelectedNode { get; private set; }
-
-    public CommandPaletteWindow(VirtualFileSystem vfs)
+    public CommandPaletteWindow()
     {
         InitializeComponent();
+        _allEntries = [];
+    }
 
+    public CommandPaletteWindow(VirtualFileSystem vfs) : this()
+    {
         _allEntries = new List<PaletteEntry>();
         foreach (FsNode file in EnumerateFiles(vfs.Root))
         {
@@ -27,16 +29,13 @@ public partial class CommandPaletteWindow : Window
         }
 
         UpdateResults(string.Empty);
-        Loaded += (_, _) =>
-        {
-            QueryBox.Focus();
-        };
+        Loaded += (_, _) => QueryBox.Focus();
     }
 
-    private void QueryBox_TextChanged(object sender, TextChangedEventArgs e) =>
-        UpdateResults(QueryBox.Text);
+    private void QueryBox_TextChanged(object? sender, TextChangedEventArgs e) =>
+        UpdateResults(QueryBox.Text ?? string.Empty);
 
-    private void QueryBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void QueryBox_KeyDown(object? sender, KeyEventArgs e)
     {
         switch (e.Key)
         {
@@ -53,34 +52,31 @@ public partial class CommandPaletteWindow : Window
                 e.Handled = true;
                 break;
             case Key.Escape:
-                DialogResult = false;
-                Close();
+                Close(null);
                 e.Handled = true;
                 break;
         }
     }
 
-    private void ResultsList_MouseDoubleClick(object sender, MouseButtonEventArgs e) => Accept();
+    private void ResultsList_DoubleTapped(object? sender, TappedEventArgs e) => Accept();
 
     private void Accept()
     {
         if (ResultsList.SelectedItem is not PaletteEntry entry)
             return;
-        SelectedNode = entry.Node;
-        DialogResult = true;
-        Close();
+        Close(entry.Node);
     }
 
     private void MoveSelection(int delta)
     {
-        int count = ResultsList.Items.Count;
+        int count = ResultsList.ItemCount;
         if (count == 0)
             return;
         int next = ResultsList.SelectedIndex + delta;
         if (next < 0) next = 0;
         if (next >= count) next = count - 1;
         ResultsList.SelectedIndex = next;
-        ResultsList.ScrollIntoView(ResultsList.SelectedItem);
+        ResultsList.ScrollIntoView(ResultsList.SelectedItem!);
     }
 
     private void UpdateResults(string query)
@@ -92,7 +88,7 @@ public partial class CommandPaletteWindow : Window
             .Take(200);
 
         ResultsList.ItemsSource = scored.Select(x => x.Entry).ToList();
-        if (ResultsList.Items.Count > 0)
+        if (ResultsList.ItemCount > 0)
             ResultsList.SelectedIndex = 0;
     }
 

@@ -1,15 +1,663 @@
-<Window xmlns="https://github.com/avaloniaui"
+<Window x:Class="TLJExplorer.MainWindow"
+        xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        x:Class="TLJExplorer.MainWindow"
-        Title="TLJ Explorer"
-        Width="1280" Height="800">
-    <!--
-        Placeholder shell for the Avalonia migration (Phase 0). The real UI is ported from
-        MainWindow.xaml/.xaml.cs (kept alongside as a reference, excluded from the build) in Phase 4.
-    -->
+        xmlns:local="clr-namespace:TLJExplorer"
+        xmlns:vm="clr-namespace:TLJExplorer.ViewModels"
+        xmlns:views="clr-namespace:TLJExplorer.Views"
+        xmlns:vlc="clr-namespace:LibVLCSharp.Avalonia;assembly=LibVLCSharp.Avalonia"
+        Title="TLJ Explorer" Height="720" Width="1180"
+        WindowStartupLocation="CenterScreen"
+        Icon="avares://TLJExplorer/Assets/TLJExplorer.ico">
+
+    <Window.DataTemplates>
+        <TreeDataTemplate DataType="vm:FsNodeViewModel" ItemsSource="{Binding Children}">
+            <StackPanel Orientation="Horizontal">
+                <Image Source="{Binding IconSource}" Width="16" Height="16" Margin="0,0,6,0" VerticalAlignment="Top"/>
+                <StackPanel Orientation="Vertical">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding DisplayName}"
+                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
+                        <Border IsVisible="{Binding HasMod}"
+                                Margin="6,0,0,0" Padding="4,0" VerticalAlignment="Center"
+                                CornerRadius="3"
+                                Background="#40D084FF"
+                                BorderBrush="#80D084FF" BorderThickness="1"
+                                ToolTip.Tip="A mod file overrides this entry (see Options -> Load Asset Mods).">
+                            <TextBlock Text="MOD" FontSize="9" FontWeight="Bold"
+                                       Foreground="#F0E4FF"/>
+                        </Border>
+                    </StackPanel>
+                    <TextBlock Text="{Binding SubtitleMatch}"
+                               IsVisible="{Binding HasSubtitleMatch}"
+                               FontSize="10.5" FontStyle="Italic" Opacity="0.75" TextTrimming="CharacterEllipsis"
+                               MaxWidth="240"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                </StackPanel>
+            </StackPanel>
+        </TreeDataTemplate>
+    </Window.DataTemplates>
+
+    <Window.Resources>
+        <!-- Order matters: the TreeViewItem style below references this ContextMenu via StaticResource,
+             which resolves at parse time. If the ContextMenu isn't defined FIRST, the setter picks up
+             an unset value and every right-click on a tree row throws. -->
+        <ContextMenu x:Key="TreeItemContextMenu">
+            <MenuItem Header="_Copy Path" Click="TreeContextCopyPath_Click"/>
+            <MenuItem Header="_Reveal in Explorer" Click="TreeContextRevealInExplorer_Click"
+                      ToolTip.Tip="Only works for loose (non-archived) files."/>
+            <Separator/>
+            <MenuItem Header="Play _Localized Variant" Click="TreeContextPlayLocalized_Click"
+                      ToolTip.Tip="If a sibling entry with the same name is marked localised, open and play it.">
+                <MenuItem.Icon>
+                    <Image Source="{StaticResource LanguagesIcon}" Width="14" Height="14"/>
+                </MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="View _Original (bypass mod)" Click="TreeContextViewOriginal_Click"
+                      ToolTip.Tip="Load this entry from the archive, ignoring any mod override.">
+                <MenuItem.Icon>
+                    <Image Source="{StaticResource EyeIcon}" Width="14" Height="14"/>
+                </MenuItem.Icon>
+            </MenuItem>
+            <MenuItem Header="Compare Original vs _Mod..." Click="TreeContextCompareMod_Click"
+                      ToolTip.Tip="Open the compare view with the original archive bytes on one side and the mod override on the other."/>
+            <MenuItem Header="E_xtract as Mod" Click="TreeContextExtractAsMod_Click"
+                      ToolTip.Tip="Copy this file's bytes into &lt;archiveDir&gt;/xarc/&lt;name&gt; so it becomes a modifiable override the game will pick up (ScummVM Stark's mod convention).">
+                <MenuItem.Icon>
+                    <Image Source="{StaticResource PlusIcon}" Width="14" Height="14"/>
+                </MenuItem.Icon>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Header="_Export This Item..." Click="TreeContextExportItem_Click"/>
+            <MenuItem Header="_Batch Export This Folder..." Click="TreeContextBatchExport_Click"/>
+        </ContextMenu>
+    </Window.Resources>
+
+    <Window.Styles>
+        <Style Selector="TreeViewItem">
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+            <Setter Property="ContextMenu" Value="{StaticResource TreeItemContextMenu}"/>
+        </Style>
+    </Window.Styles>
+
     <Grid>
-        <TextBlock Text="TLJ Explorer — Avalonia scaffold. MainWindow port lands in Phase 4."
-                   HorizontalAlignment="Center"
-                   VerticalAlignment="Center" />
+    <DockPanel>
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="_File">
+                <MenuItem Header="_Select TLJ Install Folder..." Click="SelectFolder_Click" InputGesture="Ctrl+O"/>
+                <MenuItem x:Name="RecentInstallsMenu" Header="Open _Recent"/>
+                <MenuItem Header="_Export..." Click="Export_Click" InputGesture="Ctrl+E"/>
+                <MenuItem Header="Export _Raw..." Click="ExportRaw_Click"/>
+                <MenuItem Header="_Batch Export Folder..." Click="BatchExport_Click"
+                          ToolTip.Tip="Recursively export every recognised file under the selected folder into a chosen output directory (images to TGA, sounds to WAV, models to glTF binary)."/>
+                <MenuItem Header="Export _Subtitles..." Click="ExportSubtitles_Click"
+                          ToolTip.Tip="Extract every dialogue line reachable via the game's XRC data as a CSV manifest plus per-scene SRT subtitle files."/>
+                <Separator/>
+                <MenuItem Header="E_xit" Click="Exit_Click"/>
+            </MenuItem>
+            <MenuItem Header="_Options">
+                <MenuItem x:Name="AutoPlaySoundMenuItem" Header="_Auto-play Sound" ToggleType="CheckBox" Click="AutoPlaySound_Click"/>
+                <MenuItem x:Name="AutoPlayVideoMenuItem" Header="Auto-play _Video" ToggleType="CheckBox" Click="AutoPlayVideo_Click"/>
+                <MenuItem x:Name="LoopSoundMenuItem" Header="Loop _Sound Playback" ToggleType="CheckBox" Click="LoopSound_Click"/>
+                <Separator/>
+                <MenuItem Header="_Settings..." Click="OpenSettings_Click" InputGesture="Ctrl+OemComma"/>
+            </MenuItem>
+        </Menu>
+
+        <!-- Avalonia has no built-in StatusBar control; a Border+DockPanel row stands in for it. -->
+        <Border DockPanel.Dock="Bottom" Padding="6,3" BorderThickness="0,1,0,0" BorderBrush="#22FFFFFF">
+            <DockPanel>
+                <TextBlock x:Name="SelectedPathText" Text="No file selected." VerticalAlignment="Center"/>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                    <Button x:Name="CancelBatchButton" Padding="6,2" Margin="0,0,8,0"
+                            IsVisible="False" Click="CancelBatchButton_Click"
+                            ToolTip.Tip="Cancel the running batch operation.">
+                        <StackPanel Orientation="Horizontal">
+                            <Image Source="{StaticResource CloseIcon}" Width="12" Height="12" Margin="0,0,4,0"/>
+                            <TextBlock Text="Cancel" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <ProgressBar x:Name="ScanProgressBar" Width="160" Height="16" IsIndeterminate="False" IsVisible="False"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300"/>
+                <ColumnDefinition Width="4"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <DockPanel Grid.Column="0" Margin="8,4,4,0">
+                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <ComboBox x:Name="TypeFilterCombo" Margin="0,0,0,4" HorizontalAlignment="Stretch"
+                              SelectionChanged="TreeFilter_Changed">
+                        <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <Image Width="16" Height="16" Margin="0,0,8,0"
+                                           Source="{Binding IconResourceKey, Converter={StaticResource ResourceKeyToImageConverter}}"/>
+                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <!-- Search box with a leading magnifier glyph. The glyph is a plain overlay rather
+                         than a real TextBox adorner because Fluent styling makes overriding the control
+                         template noisy for something this small. -->
+                    <Grid>
+                        <TextBox x:Name="SearchBox" Padding="24,3,4,3"
+                                 ToolTip.Tip="Search by file name or subtitle text (dialogue lines attached to sound entries in XRC)."
+                                 TextChanged="SearchBox_TextChanged"/>
+                        <Image Source="{StaticResource SearchIcon}" Width="14" Height="14"
+                               HorizontalAlignment="Left" VerticalAlignment="Center"
+                               Margin="6,0,0,0" IsHitTestVisible="False" Opacity="0.6"/>
+                    </Grid>
+                </StackPanel>
+
+                <TreeView x:Name="Tree"
+                          SelectionChanged="Tree_SelectionChanged"/>
+            </DockPanel>
+
+            <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" ResizeDirection="Columns"/>
+
+            <Grid Grid.Column="2" Margin="8">
+
+                <!-- Image resources: XMG (single) and TM (possibly many named sub-images). -->
+                <DockPanel x:Name="ImagePanel" IsVisible="False">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <ComboBox x:Name="ImageSelector"
+                                  SelectionChanged="ImageSelector_SelectionChanged"
+                                  IsVisible="False" HorizontalAlignment="Left" MinWidth="200"/>
+                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                            <Button x:Name="ImageCompareEnterButton" Padding="6,2" Margin="0,0,12,0"
+                                    IsVisible="False" Click="ImageCompareEnter_Click"
+                                    ToolTip.Tip="Compare this image against its mod override.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Image Source="{StaticResource SplitViewIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Compare Mod" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="ResetZoom_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip.Tip="Fit to window">
+                                <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
+                            </Button>
+                            <TextBlock x:Name="ZoomLabel" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,10,0" MinWidth="42" TextAlignment="Right"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Click="ZoomOut_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip.Tip="Zoom out">
+                                <Image Source="{StaticResource ZoomOutIcon}" Width="14" Height="14"/>
+                            </Button>
+                            <Slider x:Name="ImageZoomSlider" Width="140" VerticalAlignment="Center"
+                                    Minimum="10" Maximum="800" Value="100"
+                                    SmallChange="10" LargeChange="50"
+                                    ValueChanged="ImageZoomSlider_ValueChanged"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="4,0,0,0" Click="ZoomIn_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip.Tip="Zoom in">
+                                <Image Source="{StaticResource ZoomInIcon}" Width="14" Height="14"/>
+                            </Button>
+                        </StackPanel>
+                    </DockPanel>
+                    <ScrollViewer x:Name="ImageScrollViewer"
+                                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                  SizeChanged="ImageScrollViewer_SizeChanged">
+                        <Grid x:Name="ImageCenteringGrid"
+                              MinWidth="{Binding #ImageScrollViewer.Viewport.Width}"
+                              MinHeight="{Binding #ImageScrollViewer.Viewport.Height}">
+                            <LayoutTransformControl x:Name="PreviewImageTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <LayoutTransformControl.LayoutTransform>
+                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                </LayoutTransformControl.LayoutTransform>
+                                <Image x:Name="PreviewImage" Stretch="None" RenderOptions.BitmapInterpolationMode="None"/>
+                            </LayoutTransformControl>
+                        </Grid>
+                    </ScrollViewer>
+                </DockPanel>
+
+                <!-- Compare original vs modded for image resources. Two mutually-exclusive views stacked
+                     inside a single Grid content row so switching between them is a simple visibility
+                     toggle. Both modes share zoom (wheel + buttons) and pan via ScrollViewers; the
+                     side-by-side pair keeps its scroll offsets in sync so pixels stay aligned. -->
+                <Grid x:Name="ImageComparePanel" IsVisible="False">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <DockPanel Grid.Row="0">
+                            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                                <RadioButton x:Name="ImageCompareWipeMode" Content="Wipe" GroupName="ImageCompareMode" IsChecked="True"
+                                             VerticalAlignment="Center" Margin="0,0,10,0" Checked="ImageCompareMode_Changed"/>
+                                <RadioButton x:Name="ImageCompareSideBySideMode" Content="Side-by-side" GroupName="ImageCompareMode"
+                                             VerticalAlignment="Center" Margin="0,0,14,0" Checked="ImageCompareMode_Changed"/>
+                                <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="ImageCompareZoomReset_Click"
+                                        Background="Transparent" BorderThickness="0" ToolTip.Tip="Fit to window">
+                                    <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
+                                </Button>
+                                <TextBlock x:Name="ImageCompareZoomLabel" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,10,0" MinWidth="42" TextAlignment="Right"/>
+                                <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Click="ImageCompareZoomOut_Click"
+                                        Background="Transparent" BorderThickness="0" ToolTip.Tip="Zoom out">
+                                    <Image Source="{StaticResource ZoomOutIcon}" Width="14" Height="14"/>
+                                </Button>
+                                <Slider x:Name="ImageCompareZoomSlider" Width="140" VerticalAlignment="Center"
+                                        Minimum="10" Maximum="800" Value="100"
+                                        SmallChange="10" LargeChange="50"
+                                        ValueChanged="ImageCompareZoomSlider_ValueChanged"/>
+                                <Button Width="28" Height="28" Padding="0" Margin="4,0,10,0" Click="ImageCompareZoomIn_Click"
+                                        Background="Transparent" BorderThickness="0" ToolTip.Tip="Zoom in">
+                                    <Image Source="{StaticResource ZoomInIcon}" Width="14" Height="14"/>
+                                </Button>
+                                <Button Content="Close" Padding="8,2" Click="ImageCompareClose_Click"/>
+                            </StackPanel>
+                            <TextBlock x:Name="ImageCompareLabel" VerticalAlignment="Center" Opacity="0.8"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </DockPanel>
+
+                    </Grid>
+
+                    <!-- Content row: the two mode containers overlap at the same grid cell; visibility
+                         alternates via ApplyImageCompareMode. -->
+                    <Grid Grid.Row="1">
+
+                        <!-- Wipe. The inner Grid uses MinWidth/MinHeight bound to the ScrollViewer's
+                             viewport so the stage centres in the viewport when it's smaller and scrolls
+                             when zoomed larger. -->
+                        <ScrollViewer x:Name="ImageCompareWipeScroll"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      Cursor="Hand"
+                                      SizeChanged="ImageCompareScroll_SizeChanged">
+                            <Grid MinWidth="{Binding #ImageCompareWipeScroll.Viewport.Width}"
+                                  MinHeight="{Binding #ImageCompareWipeScroll.Viewport.Height}">
+                                <LayoutTransformControl x:Name="ImageCompareStageTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <LayoutTransformControl.LayoutTransform>
+                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                </LayoutTransformControl.LayoutTransform>
+                                <Grid x:Name="ImageCompareStage">
+                                    <!-- Both images stretched to the shared canvas size AND each clipped to
+                                         its half of the divider. Clipping both (not just the mod) prevents
+                                         transparent mod pixels from leaking a stretched low-res original
+                                         through, the two never draw over the same pixel. -->
+                                    <Image x:Name="ImageCompareOriginalImage" Stretch="Fill"
+                                           RenderOptions.BitmapInterpolationMode="None">
+                                        <Image.Clip>
+                                            <RectangleGeometry Rect="0,0,0,0"/>
+                                        </Image.Clip>
+                                    </Image>
+                                    <Image x:Name="ImageCompareModImage" Stretch="Fill"
+                                           RenderOptions.BitmapInterpolationMode="None">
+                                        <Image.Clip>
+                                            <RectangleGeometry Rect="0,0,0,0"/>
+                                        </Image.Clip>
+                                    </Image>
+                                    <!-- Visible thin divider bar (non-hit-testing, purely decorative). -->
+                                    <Rectangle x:Name="ImageCompareDivider" Width="2" Fill="#FFE0A030"
+                                               HorizontalAlignment="Left" IsHitTestVisible="False"/>
+                                    <!-- Wider transparent hit-area for grabbing the divider , sits on top,
+                                         so it wins over the ScrollViewer's pan handlers when clicked here.
+                                         Cursor changes to horizontal-arrow to advertise it as draggable. -->
+                                    <Rectangle x:Name="ImageCompareDividerHandle" Width="14" Fill="Transparent"
+                                               HorizontalAlignment="Left" Cursor="SizeWestEast"
+                                               PointerPressed="ImageCompareDividerHandle_PointerPressed"
+                                               PointerMoved="ImageCompareDividerHandle_PointerMoved"
+                                               PointerReleased="ImageCompareDividerHandle_PointerReleased"/>
+                                    <TextBlock x:Name="ImageCompareOriginalTag" Text="ORIGINAL"
+                                               HorizontalAlignment="Left" VerticalAlignment="Top" Margin="6,4,0,0"
+                                               Foreground="White" FontSize="10" FontWeight="Bold"
+                                               Background="#66000000" Padding="4,1" IsHitTestVisible="False"/>
+                                    <TextBlock x:Name="ImageCompareModTag" Text="MODDED"
+                                               HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,4,6,0"
+                                               Foreground="White" FontSize="10" FontWeight="Bold"
+                                               Background="#66802040" Padding="4,1" IsHitTestVisible="False"/>
+                                </Grid>
+                                </LayoutTransformControl>
+                            </Grid>
+                        </ScrollViewer>
+
+                        <!-- Side-by-side. Column 0 = ORIGINAL, Column 2 = MODDED. Each ScrollViewer uses
+                             the same MinWidth-binding pattern so its content centres when small. -->
+                        <Grid x:Name="ImageCompareSideBySideContainer" IsVisible="False">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <DockPanel Grid.Column="0">
+                                <TextBlock Text="ORIGINAL" DockPanel.Dock="Top" HorizontalAlignment="Center"
+                                           FontSize="10" FontWeight="Bold" Opacity="0.7" Margin="0,0,0,4"/>
+                                <ScrollViewer x:Name="ImageCompareSideOriginalScroll"
+                                              HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                              Cursor="Hand"
+                                              SizeChanged="ImageCompareScroll_SizeChanged"
+                                              ScrollChanged="ImageCompareSideScroll_ScrollChanged">
+                                    <Grid MinWidth="{Binding #ImageCompareSideOriginalScroll.Viewport.Width}"
+                                          MinHeight="{Binding #ImageCompareSideOriginalScroll.Viewport.Height}">
+                                        <LayoutTransformControl x:Name="ImageCompareSideOriginalTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <LayoutTransformControl.LayoutTransform>
+                                                <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                            </LayoutTransformControl.LayoutTransform>
+                                            <Image x:Name="ImageCompareSideOriginal" Stretch="Fill"
+                                                   RenderOptions.BitmapInterpolationMode="None"/>
+                                        </LayoutTransformControl>
+                                    </Grid>
+                                </ScrollViewer>
+                            </DockPanel>
+
+                            <Rectangle Grid.Column="1" Width="1" Fill="#40FFFFFF" Margin="8,0"/>
+
+                            <DockPanel Grid.Column="2">
+                                <TextBlock Text="MODDED" DockPanel.Dock="Top" HorizontalAlignment="Center"
+                                           FontSize="10" FontWeight="Bold" Opacity="0.7" Margin="0,0,0,4"
+                                           Foreground="#FFF080B0"/>
+                                <ScrollViewer x:Name="ImageCompareSideModScroll"
+                                              HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                              Cursor="Hand"
+                                              ScrollChanged="ImageCompareSideScroll_ScrollChanged">
+                                    <Grid MinWidth="{Binding #ImageCompareSideModScroll.Viewport.Width}"
+                                          MinHeight="{Binding #ImageCompareSideModScroll.Viewport.Height}">
+                                        <LayoutTransformControl x:Name="ImageCompareSideModTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <LayoutTransformControl.LayoutTransform>
+                                                <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                            </LayoutTransformControl.LayoutTransform>
+                                            <Image x:Name="ImageCompareSideMod" Stretch="Fill"
+                                                   RenderOptions.BitmapInterpolationMode="None"/>
+                                        </LayoutTransformControl>
+                                    </Grid>
+                                </ScrollViewer>
+                            </DockPanel>
+                        </Grid>
+                    </Grid>
+                </Grid>
+
+                <!-- XRC scene folders: backdrop + static sprites blit into SceneBaseImage; Bink/Smacker
+                     overlays are added as extra Image children on SceneCanvas at their (x,y), driven by
+                     a shared DispatcherTimer that swaps each Image.Source per frame. -->
+                <DockPanel x:Name="ScenePanel" IsVisible="False">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <TextBlock x:Name="SceneStatusText" VerticalAlignment="Center" Opacity="0.7"/>
+                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                            <ToggleButton x:Name="SceneDiagnosticsToggle" Content="Diagnostics" Padding="8,2" Margin="0,0,10,0"
+                                          Checked="SceneDiagnosticsToggle_Changed" Unchecked="SceneDiagnosticsToggle_Changed"
+                                          ToolTip.Tip="Show a text panel of every Item/Anim in this scene, per XrcSceneModel.Diagnose."/>
+                            <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="SceneResetZoom_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip.Tip="Fit to window">
+                                <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
+                            </Button>
+                            <TextBlock x:Name="SceneZoomLabel" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,10,0" MinWidth="42" TextAlignment="Right"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="0,0,4,0" Click="SceneZoomOut_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip.Tip="Zoom out">
+                                <Image Source="{StaticResource ZoomOutIcon}" Width="14" Height="14"/>
+                            </Button>
+                            <Slider x:Name="SceneZoomSlider" Width="140" VerticalAlignment="Center"
+                                    Minimum="10" Maximum="800" Value="100"
+                                    SmallChange="10" LargeChange="50"
+                                    ValueChanged="SceneZoomSlider_ValueChanged"/>
+                            <Button Width="28" Height="28" Padding="0" Margin="4,0,0,0" Click="SceneZoomIn_Click"
+                                    Background="Transparent" BorderThickness="0" ToolTip.Tip="Zoom in">
+                                <Image Source="{StaticResource ZoomInIcon}" Width="14" Height="14"/>
+                            </Button>
+                        </StackPanel>
+                    </DockPanel>
+                    <TextBox x:Name="SceneDiagnosticsText" DockPanel.Dock="Right" Width="360"
+                             IsVisible="False" IsReadOnly="True"
+                             FontFamily="Consolas" FontSize="11" TextWrapping="NoWrap"
+                             AcceptsReturn="True"
+                             ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             Margin="8,0,0,0"/>
+                    <ScrollViewer x:Name="SceneScrollViewer"
+                                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                        <Grid MinWidth="{Binding #SceneScrollViewer.Viewport.Width}"
+                              MinHeight="{Binding #SceneScrollViewer.Viewport.Height}">
+                            <LayoutTransformControl x:Name="SceneTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <LayoutTransformControl.LayoutTransform>
+                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                </LayoutTransformControl.LayoutTransform>
+                                <Canvas x:Name="SceneCanvas" Background="Transparent">
+                                    <Image x:Name="SceneBaseImage" Canvas.Left="0" Canvas.Top="0"
+                                           RenderOptions.BitmapInterpolationMode="None"/>
+                                </Canvas>
+                            </LayoutTransformControl>
+                        </Grid>
+                    </ScrollViewer>
+                </DockPanel>
+
+                <!-- Text / hex-dump resources: BIFF, XRC, CIR, ANI (structural dumps), raw hex, errors.
+                     The wrapping DockPanel adds a conditional "Back to Model" header row that appears
+                     only when the user asked to see an .ani's source code from the model viewer, so
+                     ordinary text dumps aren't cluttered by an irrelevant control. -->
+                <DockPanel x:Name="TextViewer" IsVisible="False">
+                    <StackPanel x:Name="AniSourceHeader" DockPanel.Dock="Top" Orientation="Horizontal"
+                                IsVisible="False" Margin="0,0,0,8">
+                        <Button Padding="6,2" Click="BackToModel_Click"
+                                ToolTip.Tip="Return to the 3D model view.">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#x2190;" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <TextBlock Text="Back to Model" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
+                        <TextBlock x:Name="AniSourceHeaderLabel" VerticalAlignment="Center" Margin="10,0,0,0" Opacity="0.7"/>
+                    </StackPanel>
+                    <TextBox x:Name="TextPanel"
+                             IsReadOnly="True"
+                             FontFamily="Consolas" FontSize="12"
+                             TextWrapping="NoWrap" AcceptsReturn="True"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+                </DockPanel>
+
+                <!-- Sound resources: OVS (Ogg) and ISN family (WAV), with optional dialogue subtitle.
+                     Layout mirrors a standard media-player card: bold subtitle at top, waveform strip,
+                     seek slider, current/total time labels flanking the slider, then Play/Stop icon
+                     buttons centered below. -->
+                <StackPanel x:Name="SoundPanel" IsVisible="False" VerticalAlignment="Top" Margin="0,24,0,0">
+                    <TextBlock x:Name="SubtitleText" IsVisible="False"
+                               TextWrapping="Wrap" FontSize="15" LineHeight="20"
+                               Margin="0,0,0,24"/>
+
+                    <!-- Waveform. We re-render the vector drawing at the panel's actual width whenever
+                         the window resizes (see WaveformImage_SizeChanged), so the strip stays at a
+                         constant bar-density regardless of window size. Stretch="None" therefore,
+                         the drawing already matches the container. -->
+                    <Image x:Name="WaveformImage" Height="64" Stretch="None"
+                           HorizontalAlignment="Stretch"
+                           SizeChanged="WaveformImage_SizeChanged"/>
+
+                    <Slider x:Name="SoundSlider" Margin="0,4,0,0" Minimum="0"
+                            PointerPressed="SoundSlider_PointerPressed" PointerReleased="SoundSlider_PointerReleased"/>
+
+                    <Grid Margin="0,4,0,0">
+                        <TextBlock x:Name="SoundCurrentTimeText" HorizontalAlignment="Left"
+                                   FontFamily="Consolas" FontSize="12" Opacity="0.8"
+                                   Text="0:00"/>
+                        <TextBlock x:Name="SoundTotalTimeText" HorizontalAlignment="Right"
+                                   FontFamily="Consolas" FontSize="12" Opacity="0.8"
+                                   Text="0:00"/>
+                    </Grid>
+
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,0">
+                        <Button x:Name="PlayPauseButton" Width="48" Height="48" Click="PlayPauseButton_Click"
+                                ToolTip.Tip="Play / Pause (Space)">
+                            <Image x:Name="PlayPauseIcon" Source="{StaticResource PlayIcon}" Width="22" Height="22"/>
+                        </Button>
+                        <Button x:Name="StopButton" Width="48" Height="48" Margin="12,0,0,0" Click="StopButton_Click"
+                                ToolTip.Tip="Stop">
+                            <Image Source="{StaticResource StopIcon}" Width="18" Height="18"/>
+                        </Button>
+                        <ToggleButton x:Name="SoundCompareToggle" Height="48" Padding="10,0" Margin="16,0,0,0"
+                                      IsVisible="False"
+                                      Checked="SoundCompareToggle_Changed" Unchecked="SoundCompareToggle_Changed"
+                                      ToolTip.Tip="A/B: play the mod override instead of the original.">
+                            <StackPanel Orientation="Horizontal">
+                                <Image Source="{StaticResource SwapIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                <TextBlock Text="Play mod" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </ToggleButton>
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Video resources: SSS (Smacker) and BBB (Bink). ffmpeg transcodes the raw stream
+                     to a temp MP4 (H.264+AAC) on load and a LibVLC-backed VideoView plays it natively.
+                     "Open in External Player" is kept as a fallback. -->
+                <DockPanel x:Name="VideoPanel" IsVisible="False" Margin="0,24,0,0">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <TextBlock x:Name="VideoLabel" TextWrapping="Wrap" FontSize="14"/>
+                        <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                            <TextBlock x:Name="VideoZoomLabel" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,10,0" MinWidth="42"/>
+                            <Slider x:Name="VideoZoomSlider" Width="180" VerticalAlignment="Center"
+                                    Minimum="25" Maximum="800" Value="100"
+                                    SmallChange="10" LargeChange="50"
+                                    ValueChanged="VideoZoomSlider_ValueChanged"/>
+                        </StackPanel>
+                    </DockPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,16,0,0">
+                        <Button x:Name="VideoPlayPauseButton" Content="Pause" Width="80" Margin="0,0,6,0" Click="VideoPlayPauseButton_Click"/>
+                        <CheckBox x:Name="RemoveBackgroundCheck" Content="Remove background" VerticalAlignment="Center" Margin="0,0,12,0"
+                                  Checked="RemoveBackground_Changed" Unchecked="RemoveBackground_Changed"/>
+                        <Button x:Name="OpenExternalButton" Content="Open in External Player"
+                                Padding="12,6" Click="OpenExternalButton_Click"/>
+                    </StackPanel>
+                    <ScrollViewer x:Name="VideoScrollViewer"
+                                  HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+                        <Grid MinWidth="{Binding #VideoScrollViewer.Viewport.Width}"
+                              MinHeight="{Binding #VideoScrollViewer.Viewport.Height}">
+                            <LayoutTransformControl x:Name="VideoTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <LayoutTransformControl.LayoutTransform>
+                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                </LayoutTransformControl.LayoutTransform>
+                                <vlc:VideoView x:Name="VideoPlayer" Width="640" Height="360"/>
+                            </LayoutTransformControl>
+                        </Grid>
+                    </ScrollViewer>
+                </DockPanel>
+
+                <!-- 3D model resources: CIR, skeletally posed/skinned from an ANI animation's sampled
+                     keyframes (see SkeletonPoser/ModelRenderer.ApplyPose). CIR itself stores no bind
+                     pose, so with no animation selected the mesh shows unposed/identity-bone "rest" data,
+                     which can look distorted (see ModelNoAnimationNote below). -->
+                <Grid x:Name="ModelPanel" IsVisible="False">
+                    <views:GlModelViewerHost x:Name="ModelViewerHost"/>
+
+                    <StackPanel VerticalAlignment="Top" HorizontalAlignment="Left" Margin="6" Width="380"
+                                Background="#AA202020">
+                        <TextBlock x:Name="ModelHintText" Margin="4,4,4,2" Opacity="0.6" FontSize="11" IsHitTestVisible="False"
+                                   Text="Left-drag: orbit  |  Right-drag: pan  |  Wheel: zoom"/>
+
+                        <CheckBox x:Name="ModelIncludeWholeInstallCheck" Content="Include whole install"
+                                  Margin="4,2,4,4"
+                                  Checked="ModelIncludeWholeInstall_Changed" Unchecked="ModelIncludeWholeInstall_Changed"/>
+
+                        <Grid Margin="4,0,4,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Text="Model:" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,6,4"/>
+                            <ComboBox x:Name="ModelSelectorCombo" Grid.Row="0" Grid.Column="1" Margin="0,0,0,4" HorizontalAlignment="Stretch"
+                                      DisplayMemberBinding="{Binding DisplayName}" SelectionChanged="ModelSelectorCombo_SelectionChanged"/>
+
+                            <TextBlock Text="Skin:" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,6,4"/>
+                            <ComboBox x:Name="SkinSelectorCombo" Grid.Row="1" Grid.Column="1" Margin="0,0,0,4" HorizontalAlignment="Stretch"
+                                      DisplayMemberBinding="{Binding DisplayName}" SelectionChanged="SkinSelectorCombo_SelectionChanged"/>
+
+                            <TextBlock Text="Animation:" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox x:Name="AnimationSelectorCombo" Grid.Row="2" Grid.Column="1" HorizontalAlignment="Stretch"
+                                      DisplayMemberBinding="{Binding DisplayName}" SelectionChanged="AnimationSelectorCombo_SelectionChanged"/>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="4,0,4,4">
+                            <Button x:Name="ModelPlayPauseButton" Content="Play" Width="60" Margin="0,0,6,0" Click="ModelPlayPauseButton_Click"/>
+                            <CheckBox x:Name="ModelLoopCheck" Content="Loop" IsChecked="True" VerticalAlignment="Center" Margin="0,0,10,0"
+                                      Checked="ModelLoopCheck_Changed" Unchecked="ModelLoopCheck_Changed"/>
+                            <TextBlock x:Name="ModelTimeText" VerticalAlignment="Center" Opacity="0.7" Text="0.0s / 0.0s"/>
+                            <Button x:Name="ViewAniSourceButton" Padding="6,2" Margin="10,0,0,0"
+                                    IsVisible="False" Click="ViewAniSource_Click"
+                                    ToolTip.Tip="View the currently-selected animation's decoded structure as text.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Image Source="{StaticResource EyeIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Source" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <Slider x:Name="ModelScrubSlider" Margin="4,0,4,4" Minimum="0" Maximum="1" ValueChanged="ModelScrubSlider_ValueChanged"
+                                PointerPressed="ModelScrubSlider_PointerPressed" PointerReleased="ModelScrubSlider_PointerReleased"/>
+
+                        <StackPanel Orientation="Horizontal" Margin="4,2,4,4">
+                            <CheckBox x:Name="ModelWireframeCheck" VerticalAlignment="Center" Margin="0,0,10,0"
+                                      Checked="ModelWireframe_Changed" Unchecked="ModelWireframe_Changed"
+                                      ToolTip.Tip="Overlay a wireframe on the shaded mesh.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Image Source="{StaticResource WireframeActionIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Wireframe" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </CheckBox>
+                            <TextBlock Text="BG:" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,4,0"/>
+                            <ComboBox x:Name="ModelBackgroundCombo" Width="90" SelectionChanged="ModelBackground_Changed">
+                                <ComboBoxItem Content="Dark" Tag="Dark"/>
+                                <ComboBoxItem Content="Light" Tag="Light"/>
+                                <ComboBoxItem Content="Transparent" Tag="Transparent"/>
+                            </ComboBox>
+                            <Button Padding="6,2" Margin="10,0,0,0" Click="ModelSavePng_Click"
+                                    ToolTip.Tip="Save a PNG screenshot of the current view.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Image Source="{StaticResource CameraActionIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Save PNG..." VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                            <ToggleButton x:Name="ModelCompareToggle" Padding="6,2" Margin="6,0,0,0"
+                                          IsVisible="False"
+                                          Checked="ModelCompareToggle_Changed" Unchecked="ModelCompareToggle_Changed"
+                                          ToolTip.Tip="Toggle between the original file and the modded override for this asset.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Image Source="{StaticResource SwapIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Mod" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </ToggleButton>
+                        </StackPanel>
+
+                        <StackPanel Orientation="Horizontal" Margin="4,2,4,6">
+                            <TextBlock Text="View:" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,6,0"/>
+                            <Button Content="Front" Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Front" Click="ModelOrthoView_Click"/>
+                            <Button Content="Back"  Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Back"  Click="ModelOrthoView_Click"/>
+                            <Button Content="Left"  Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Left"  Click="ModelOrthoView_Click"/>
+                            <Button Content="Right" Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Right" Click="ModelOrthoView_Click"/>
+                            <Button Content="Top"   Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Top"   Click="ModelOrthoView_Click"/>
+                            <Button Content="Bot"   Padding="6,2" MinWidth="42" Margin="0,0,8,0" Tag="Bottom" Click="ModelOrthoView_Click"/>
+                            <Button Padding="6,2" Click="ModelResetView_Click"
+                                    ToolTip.Tip="Restore the default 3/4 orbit angle and reframe on the model.">
+                                <StackPanel Orientation="Horizontal">
+                                    <Image Source="{StaticResource ResetActionIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                    <TextBlock Text="Reset" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <StackPanel x:Name="ModelNoAnimationNote" Orientation="Horizontal" Margin="4,0,4,6"
+                                    IsVisible="False" Opacity="0.85">
+                            <Image Source="{StaticResource TriangleAlertIcon}" Width="14" Height="14"
+                                   VerticalAlignment="Top" Margin="0,2,6,0"/>
+                            <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#FFE0A030"
+                                       Text="No animation found next to this model -- pick one from the Animation dropdown, or check 'Include whole install' to search further. Showing unposed rest data, which may look distorted."/>
+                        </StackPanel>
+                    </StackPanel>
+                </Grid>
+
+            </Grid>
+        </Grid>
+    </DockPanel>
+
+        <!-- In-app settings overlay: sits on top of the whole DockPanel (menu bar included). Hidden
+             until File/Options -> Settings opens it. Focusable so Esc can close it via key handler. -->
+        <views:SettingsPanel x:Name="SettingsOverlay" IsVisible="False" Focusable="True"/>
     </Grid>
 </Window>

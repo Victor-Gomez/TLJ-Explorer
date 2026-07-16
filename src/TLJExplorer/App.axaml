@@ -14,19 +14,33 @@
             <services:ResourceKeyToImageConverter x:Key="ResourceKeyToImageConverter"/>
 
             <!--
-                Avalonia's FluentTheme has no equivalent of WPF Fluent's semantic
-                TextFillColorPrimary/SecondaryBrush tokens, so they're redefined here (same keys, same
-                WinUI/Fluent dark+light values) purely so MainWindow's existing {DynamicResource ...}
-                usages keep working unchanged.
+                Avalonia's FluentTheme has no equivalent of WPF Fluent's semantic WinUI2 text/card/fill
+                tokens, so the ones this app's XAML references via {DynamicResource ...} are redefined
+                here (same keys, approximate WinUI/Fluent dark+light values) purely so that XAML keeps
+                working unchanged.
             -->
             <ResourceDictionary.ThemeDictionaries>
                 <ResourceDictionary x:Key="Dark">
                     <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#FFFFFFFF"/>
                     <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#C5FFFFFF"/>
+                    <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#14FFFFFF"/>
+                    <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="#14FFFFFF"/>
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="#FF202020"/>
+                    <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#19FFFFFF"/>
+                    <SolidColorBrush x:Key="SubtleFillColorSecondaryBrush" Color="#12FFFFFF"/>
+                    <SolidColorBrush x:Key="SubtleFillColorTertiaryBrush" Color="#1FFFFFFF"/>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#FF60CDFF"/>
                 </ResourceDictionary>
                 <ResourceDictionary x:Key="Light">
                     <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#E4000000"/>
                     <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#9E000000"/>
+                    <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#B3FFFFFF"/>
+                    <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="#0F000000"/>
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="#FFF3F3F3"/>
+                    <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#15000000"/>
+                    <SolidColorBrush x:Key="SubtleFillColorSecondaryBrush" Color="#09000000"/>
+                    <SolidColorBrush x:Key="SubtleFillColorTertiaryBrush" Color="#0F000000"/>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#FF005FB8"/>
                 </ResourceDictionary>
             </ResourceDictionary.ThemeDictionaries>
         </ResourceDictionary>
