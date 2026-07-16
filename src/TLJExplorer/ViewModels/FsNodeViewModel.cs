@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
@@ -206,7 +207,14 @@ public sealed class FsNodeViewModel : INotifyPropertyChanged
         if (IconCache.TryGetValue(cacheKey, out IImage? cached))
             return cached;
 
-        var image = (IImage)Application.Current!.Resources[resourceKey]!;
+        // The plain Resources[key] indexer only searches the top-level dictionary, not merged ones --
+        // these icons live in Assets/Icons/VectorIcons.axaml, merged in via
+        // Application.Resources.MergedDictionaries, so that indexer silently returned null here (every
+        // tree row rendered with no icon at all). TryFindResource walks merged dictionaries correctly;
+        // see ResourceKeyToImageConverter for the same pattern used successfully elsewhere.
+        if (!Application.Current!.TryFindResource(resourceKey, out object? resource) || resource is not IImage image)
+            throw new InvalidOperationException($"Vector icon resource '{resourceKey}' was not found.");
+
         IconCache[cacheKey] = image;
         return image;
     }

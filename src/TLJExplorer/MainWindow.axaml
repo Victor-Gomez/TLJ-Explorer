@@ -460,9 +460,16 @@
 
                     <!-- Waveform. We re-render the vector drawing at the panel's actual width whenever
                          the window resizes (see WaveformImage_SizeChanged), so the strip stays at a
-                         constant bar-density regardless of window size. Stretch="None" therefore,
-                         the drawing already matches the container. -->
-                    <Image x:Name="WaveformImage" Height="64" Stretch="None"
+                         constant bar-density regardless of window size. Stretch must NOT be "None": bars
+                         are centered within their slot (see WaveformRenderer.Render), so the drawn
+                         geometry's own bounding box always falls a bit short of the requested canvasWidth,
+                         and with Stretch="None" the Image's own layout size is derived from that (slightly
+                         smaller) content size, which re-fires SizeChanged with an even smaller width on
+                         every unrelated layout pass (playback timer ticks, scrolling elsewhere, etc.),
+                         shrinking the strip a little more each time. Stretch="Fill" decouples the
+                         control's layout size from its content's natural size (imperceptible sub-pixel
+                         stretch to compensate), breaking the feedback loop. -->
+                    <Image x:Name="WaveformImage" Height="64" Stretch="Fill"
                            HorizontalAlignment="Stretch"
                            SizeChanged="WaveformImage_SizeChanged"/>
 
