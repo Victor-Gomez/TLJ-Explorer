@@ -3253,18 +3253,23 @@ public partial class MainWindow : Window
 
     private void MediaPlayer_MediaEnded_SoundLoop(object? sender, EventArgs e)
     {
+        // Once LibVLC's native player reaches the Ended state, a plain Play() call is a silent no-op --
+        // it needs an explicit Stop() first to reset its internal state machine before it'll start again
+        // (the same thing the Stop button already does, which is why Stop-then-Play always worked while
+        // clicking Play directly after natural end-of-track did nothing). Stop() also resets Time to 0,
+        // but the explicit Position assignment below is kept for clarity/safety.
+        _mediaPlayer.Stop();
+        _mediaPlayer.Position = TimeSpan.Zero;
+
         if (_settings.LoopSoundPlayback)
         {
-            _mediaPlayer.Position = TimeSpan.Zero;
             _mediaPlayer.Play();
         }
         else
         {
-            // Rewind to the start so the next Play button click resumes from 0 instead of sitting at the
-            // final frame. Also snap the seek slider back and flip the transport icon to Play -- the
-            // position timer stopped before it could push the final tick to the slider.
+            // Snap the seek slider back and flip the transport icon to Play -- the position timer
+            // stopped before it could push the final tick to the slider.
             _positionTimer.Stop();
-            _mediaPlayer.Position = TimeSpan.Zero;
             SoundSlider.Value = 0;
             SetPlayPauseIcon(playing: false);
             UpdateSoundTimeReadout();
