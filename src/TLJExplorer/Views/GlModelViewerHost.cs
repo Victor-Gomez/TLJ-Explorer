@@ -26,7 +26,20 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
     private const float MaxPitch = 1.55f;
 
     private readonly Image _image = new() { Stretch = Stretch.Uniform };
-    private readonly ModelRenderer _renderer = new();
+
+    // Lazily created on first actual use (loading a model) rather than a field initializer: constructing
+    // a ModelRenderer creates a hidden GLFW window + OpenGL context, which takes several hundred ms --
+    // eating into it eagerly here would delay showing the main window, since this control is built as
+    // part of MainWindow's visual tree regardless of which content panel is initially active.
+    private ModelRenderer? _rendererBacking;
+    private ModelRenderer Renderer => _rendererBacking ??= new ModelRenderer
+    {
+        ClearColor = _pendingClearColor,
+        ShowWireframe = _pendingShowWireframe,
+    };
+
+    private (float R, float G, float B, float A) _pendingClearColor = (0.16f, 0.16f, 0.18f, 1f);
+    private bool _pendingShowWireframe;
 
     private WriteableBitmap? _bitmap;
     private bool _hasModel;
@@ -91,7 +104,7 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
     /// <summary>Uploads <paramref name="model"/>'s geometry and frames the orbit camera around it.</summary>
     public void LoadModel(CirModel model)
     {
-        _renderer.LoadModel(model);
+        Renderer.LoadModel(model);
         _model = model;
         _hasModel = true;
 
@@ -113,8 +126,8 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
     /// <see cref="ModelRenderer.BoundsCenter"/> / <see cref="ModelRenderer.BoundsRadius"/>.</summary>
     private void FrameCameraOnCurrentBounds()
     {
-        _target = _renderer.BoundsCenter;
-        _distance = Math.Max(0.05f, _renderer.BoundsRadius * 2.2f);
+        _target = Renderer.BoundsCenter;
+        _distance = Math.Max(0.05f, Renderer.BoundsRadius * 2.2f);
         _yaw = -0.6f;
         _pitch = 0.35f;
     }
@@ -131,18 +144,40 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
     /// <summary>One of the six standard orthographic axis-aligned camera directions.</summary>
     public enum ViewDirection { Front, Back, Left, Right, Top, Bottom }
 
-    /// <summary>Colour the viewport clears to before rendering the mesh.</summary>
+    /// <summary>
+    /// Colour the viewport clears to before rendering the mesh. Setting this before a model has ever
+    /// been loaded just records the preference -- it does not force the (expensive) renderer to spin up.
+    /// </summary>
     public (float R, float G, float B, float A) ClearColor
     {
-        get => _renderer.ClearColor;
-        set { _renderer.ClearColor = value; RequestRedraw(); }
+        get => _rendererBacking?.ClearColor ?? _pendingClearColor;
+        set
+        {
+            _pendingClearColor = value;
+            if (_rendererBacking is not null)
+            {
+                _rendererBacking.ClearColor = value;
+                RequestRedraw();
+            }
+        }
     }
 
-    /// <summary>Overlay the shaded model with a wireframe pass.</summary>
+    /// <summary>
+    /// Overlay the shaded model with a wireframe pass. Setting this before a model has ever been loaded
+    /// just records the preference -- it does not force the (expensive) renderer to spin up.
+    /// </summary>
     public bool ShowWireframe
     {
-        get => _renderer.ShowWireframe;
-        set { _renderer.ShowWireframe = value; RequestRedraw(); }
+        get => _rendererBacking?.ShowWireframe ?? _pendingShowWireframe;
+        set
+        {
+            _pendingShowWireframe = value;
+            if (_rendererBacking is not null)
+            {
+                _rendererBacking.ShowWireframe = value;
+                RequestRedraw();
+            }
+        }
     }
 
     /// <summary>
@@ -156,7 +191,7 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         if (!_hasModel || width <= 1 || height <= 1)
             return null;
         var camera = new OrbitCamera(_target, _yaw, _pitch, _distance);
-        return _renderer.RenderFrame(width, height, camera);
+        return Renderer.RenderFrame(width, height, camera);
     }
 
     /// <summary>Reframes the orbit camera on the current mesh bounds, keeping the current yaw/pitch.</summary>
@@ -165,8 +200,8 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         if (!_hasModel)
             return;
 
-        _target = _renderer.BoundsCenter;
-        _distance = Math.Max(0.05f, _renderer.BoundsRadius * 2.2f);
+        _target = Renderer.BoundsCenter;
+        _distance = Math.Max(0.05f, Renderer.BoundsRadius * 2.2f);
         RequestRedraw();
     }
 
@@ -253,7 +288,7 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         _lastRenderingTime = null;
 
         if (_model is not null)
-            _renderer.ApplyPose(SkeletonPoser.IdentityPose(_model.Skeleton.Length));
+            Renderer.ApplyPose(SkeletonPoser.IdentityPose(_model.Skeleton.Length));
     }
 
     /// <summary>Samples the current animation at <see cref="_timeMs"/> and re-skins the renderer. Pass
@@ -267,33 +302,33 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         if (_animation is null)
         {
             _progress = 0f;
-            _renderer.ApplyPose(SkeletonPoser.IdentityPose(_model.Skeleton.Length), updateBounds);
+            Renderer.ApplyPose(SkeletonPoser.IdentityPose(_model.Skeleton.Length), updateBounds);
             return;
         }
 
         BonePose[] poses = AnimationSampler.Sample(_animation, _timeMs, Loop, out _progress);
         Matrix4x4[] world = SkeletonPoser.Pose(_model.Skeleton, poses);
-        _renderer.ApplyPose(world, updateBounds);
+        Renderer.ApplyPose(world, updateBounds);
     }
 
     /// <summary>Supplies a resolved texture for a material. Must be called on the UI thread.</summary>
     public void SetMaterialTexture(int materialIndex, DecodedImage? image)
     {
-        _renderer.SetMaterialTexture(materialIndex, image);
+        Renderer.SetMaterialTexture(materialIndex, image);
         RequestRedraw();
     }
 
     /// <summary>Reverts a single material back to its flat-color fallback.</summary>
     public void ResetMaterialTexture(int materialIndex)
     {
-        _renderer.ResetMaterialTexture(materialIndex);
+        Renderer.ResetMaterialTexture(materialIndex);
         RequestRedraw();
     }
 
     /// <summary>Reverts every material back to its flat-color fallback.</summary>
     public void ResetMaterialTextures()
     {
-        _renderer.ResetMaterialTextures();
+        Renderer.ResetMaterialTextures();
         RequestRedraw();
     }
 
@@ -341,7 +376,7 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
             return false;
 
         var camera = new OrbitCamera(_target, _yaw, _pitch, _distance);
-        byte[] pixels = _renderer.RenderFrame(width, height, camera);
+        byte[] pixels = Renderer.RenderFrame(width, height, camera);
 
         if (_bitmap is null || _bitmap.PixelSize.Width != width || _bitmap.PixelSize.Height != height)
         {
@@ -442,6 +477,6 @@ public sealed class GlModelViewerHost : ContentControl, IDisposable
         // Guard the frame-loop unhook so any failure there can't skip renderer disposal — the
         // renderer owns a hidden GLFW window whose thread will keep the process alive if leaked.
         try { UnhookFrameLoop(); } catch { }
-        _renderer.Dispose();
+        _rendererBacking?.Dispose();
     }
 }

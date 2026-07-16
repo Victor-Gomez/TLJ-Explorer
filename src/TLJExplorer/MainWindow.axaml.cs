@@ -27,8 +27,31 @@ public partial class MainWindow : Window
 {
     private readonly AppSettings _settings;
     private readonly TempFileTracker _tempFiles;
-    private readonly LibVlcMediaPlayer _mediaPlayer = new();
-    private readonly LibVlcMediaPlayer _videoPlayer = new();
+    // Lazily created on first actual use (opening a sound/video resource) rather than field initializers:
+    // constructing a LibVlcMediaPlayer spins up the native libvlc engine (plugin discovery etc.), which
+    // takes a couple hundred ms -- eating that eagerly here would delay showing the main window.
+    private LibVlcMediaPlayer? _mediaPlayerBacking;
+    private LibVlcMediaPlayer _mediaPlayer => _mediaPlayerBacking ??= CreateSoundPlayer();
+
+    private LibVlcMediaPlayer? _videoPlayerBacking;
+    private LibVlcMediaPlayer _videoPlayer => _videoPlayerBacking ??= CreateVideoPlayer();
+
+    private LibVlcMediaPlayer CreateSoundPlayer()
+    {
+        var player = new LibVlcMediaPlayer();
+        player.MediaOpened += MediaPlayer_MediaOpened;
+        player.MediaEnded += MediaPlayer_MediaEnded_SoundLoop;
+        return player;
+    }
+
+    private LibVlcMediaPlayer CreateVideoPlayer()
+    {
+        var player = new LibVlcMediaPlayer();
+        player.MediaEnded += VideoPlayer_MediaEnded;
+        VideoPlayer.MediaPlayer = player.NativePlayer;
+        return player;
+    }
+
     private readonly DispatcherTimer _positionTimer;
 
     private readonly DispatcherTimer _searchDebounceTimer;
@@ -115,8 +138,6 @@ public partial class MainWindow : Window
         _settings = AppSettings.Load();
         _tempFiles = ((App)Application.Current!).TempFiles;
 
-        VideoPlayer.MediaPlayer = _videoPlayer.NativePlayer;
-
         // See the _imageScale/etc. field comments: these aren't x:Name-addressable from XAML, so wire
         // them onto their host controls' LayoutTransform/Clip properties here instead.
         PreviewImageTransformHost.LayoutTransform = _imageScale;
@@ -142,10 +163,6 @@ public partial class MainWindow : Window
         _modelPlaybackTimer.Tick += ModelPlaybackTimer_Tick;
         _modelPlaybackTimer.Start();
 
-        _mediaPlayer.MediaOpened += MediaPlayer_MediaOpened;
-        _mediaPlayer.MediaEnded += MediaPlayer_MediaEnded_SoundLoop;
-        _videoPlayer.MediaEnded += VideoPlayer_MediaEnded;
-
         TypeFilterCombo.ItemsSource = ResourceTypeFilter.Categories;
         TypeFilterCombo.SelectedIndex = 0;
 
@@ -159,9 +176,14 @@ public partial class MainWindow : Window
         Loaded += MainWindow_Loaded;
         Closed += (_, _) =>
         {
-            _mediaPlayer.Dispose();
-            StopVideo();
-            _videoPlayer.Dispose();
+            // Guard on the backing field, not the lazy property: if the user never played a sound/video
+            // this session, don't force the (expensive) native player to spin up just to tear it down.
+            _mediaPlayerBacking?.Dispose();
+            if (_videoPlayerBacking is not null)
+            {
+                StopVideo();
+                _videoPlayerBacking.Dispose();
+            }
             ModelViewerHost.Dispose();
             _modFolderWatcher?.Dispose();
         };
