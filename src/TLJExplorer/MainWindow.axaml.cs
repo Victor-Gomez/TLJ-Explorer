@@ -1950,6 +1950,13 @@ public partial class MainWindow : Window
         _imageCompareOriginalClip.Rect = new Rect(0, 0, x, _compareCanvasHeight);
         _imageCompareModClip.Rect = new Rect(x, 0, _compareCanvasWidth - x, _compareCanvasHeight);
 
+        // Avalonia's Visual.Clip only auto-invalidates the visual when the Clip property itself is
+        // reassigned to a different object -- Geometry (unlike e.g. DrawingImage) doesn't implement the
+        // internal IAffectsRender interface, so mutating an existing RectangleGeometry's Rect in place
+        // (as above) is otherwise silently ignored until something else happens to trigger a repaint.
+        ImageCompareOriginalImage.InvalidateVisual();
+        ImageCompareModImage.InvalidateVisual();
+
         // The divider and its hit-area live inside the zoomed stage, so their local (unscaled) width has to
         // be divided by the current zoom to hold a constant on-screen pixel size. Without this, zooming
         // out to say 0.1x reduces a 2-unit bar to 0.2 screen pixels -- invisible.
@@ -1975,8 +1982,19 @@ public partial class MainWindow : Window
 
     private void ImageCompareMode_Changed(object? sender, RoutedEventArgs e)
     {
-        if (ImageComparePanel.IsVisible)
-            ApplyImageCompareMode();
+        if (!ImageComparePanel.IsVisible)
+            return;
+
+        ApplyImageCompareMode();
+
+        // Wipe and side-by-side show different ScrollViewers with different viewport sizes (side-by-side
+        // splits the width between two panes), so a zoom that was fit to the mode being left behind can
+        // leave the newly-shown one over/under-zoomed -- previously this only got fixed by closing and
+        // reopening the compare view, which re-ran the fit against whichever mode ended up visible. Only
+        // re-fit when the user hasn't manually zoomed/panned, same guard ImageCompareScroll_SizeChanged
+        // uses.
+        if (_compareFitToWindow)
+            ApplyCompareDefaultZoomWhenReady();
     }
 
     // -------------------- Wipe drag (on the transparent divider handle overlay) --------------------
