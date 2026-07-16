@@ -3,7 +3,7 @@ using System.IO;
 namespace TLJExplorer.Services;
 
 /// <summary>
-/// Owns a single fixed scratch directory (<c>%TEMP%\TLJExplorer\</c>) that every extracted sound/video/PNG
+/// Owns a single fixed scratch directory (<c>TLJExplorer/</c> under the OS temp folder) that every extracted sound/video/PNG
 /// frame is written into. The directory is wiped wholesale on startup (sweeping up after any prior crash)
 /// and again on exit. No per-item tracking -- callers just ask for a unique path inside the scratch dir.
 /// </summary>
@@ -42,7 +42,7 @@ public sealed class TempFileTracker
         }
         catch (IOException)
         {
-            // A file might still be locked (e.g. WPF's MediaPlayer holding a WAV open). The OS temp folder
+            // A file might still be locked (e.g. LibVLC holding a WAV open). The OS temp folder
             // gets swept eventually, and startup will retry.
         }
         catch (UnauthorizedAccessException)

@@ -25,8 +25,8 @@ public sealed class GlbWriteOptions
     /// <summary>
     /// Optional resolver for material textures. Called once per <see cref="CirMaterial.TextureName"/>;
     /// return raw PNG (or JPEG) bytes to embed in the .glb, or <c>null</c> to leave the material flat-coloured.
-    /// The Core library doesn't ship a texture decoder-and-PNG-encoder pipeline (that would drag in WPF /
-    /// System.Drawing); wire this up from the app layer where those APIs are available.
+    /// The Core library doesn't ship a texture decoder-and-PNG-encoder pipeline (that would drag in a UI
+    /// framework's imaging stack); wire this up from the app layer where those APIs are available.
     /// </summary>
     public Func<string, byte[]?>? TextureResolver { get; init; }
 

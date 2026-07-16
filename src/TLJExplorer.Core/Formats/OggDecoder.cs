@@ -7,10 +7,9 @@ namespace TLJExplorer.Core.Formats;
 /// verbatim by <see cref="ContainerUnwrap"/>) to a canonical 16-bit PCM WAV file.
 /// </summary>
 /// <remarks>
-/// WPF's built-in <c>MediaPlayer</c> only plays whatever formats the host OS's installed Media
-/// Foundation/DirectShow codecs support, and Ogg Vorbis is not one of them on a typical Windows
-/// install. Rather than depend on that, we decode Vorbis ourselves with the pure-managed NVorbis
-/// library and hand the UI a WAV file instead -- WAV playback works everywhere with no extra
+/// Rather than depend on whatever audio codecs the playback backend and host OS happen to support
+/// (Ogg Vorbis is a gap on plenty of setups), we decode Vorbis ourselves with the pure-managed
+/// NVorbis library and hand the UI a WAV file instead -- WAV playback works everywhere with no extra
 /// system codecs required.
 /// </remarks>
 public static class OggDecoder

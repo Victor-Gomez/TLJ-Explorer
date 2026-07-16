@@ -256,9 +256,8 @@ public static class ResourceLoader
 
     private static SoundResource LoadOvsSound(FsNode node, Stream stream, TempFileTracker tempFiles)
     {
-        // .ovs is an Ogg Vorbis stream wrapped verbatim, but WPF's MediaPlayer only plays whatever the
-        // host OS's installed codecs support -- Ogg Vorbis usually isn't one of them. Decode it ourselves
-        // (NVorbis, pure managed) straight to WAV so playback doesn't depend on system codecs at all.
+        // .ovs is an Ogg Vorbis stream wrapped verbatim; decode it ourselves (NVorbis, pure managed)
+        // straight to WAV so playback doesn't depend on the host having an Ogg Vorbis codec available.
         string tempPath = tempFiles.CreateTempFile(".wav");
         using (var output = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
         {

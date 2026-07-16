@@ -50,12 +50,12 @@ public sealed class AppSettings
     /// video rectangle visually merges into the surrounding UI. Hex like <c>202020</c>.</summary>
     public string VideoOverlayColor { get; set; } = "202020";
 
-    /// <summary>UI theme: <c>System</c>, <c>Light</c>, or <c>Dark</c>. Maps to WPF's <c>ThemeMode</c>.</summary>
+    /// <summary>UI theme: <c>System</c>, <c>Light</c>, or <c>Dark</c>. Maps to Avalonia's <c>ThemeVariant</c>.</summary>
     public string Theme { get; set; } = "Dark";
 
     /// <summary>
     /// When true, every scene-folder load also writes a per-scene diagnostic report to
-    /// <c>%TEMP%\TLJExplorer_last_scene_items.txt</c>: every Item's subtype/enabled/position/asset plus
+    /// <c>TLJExplorer_last_scene_items.txt</c> in the OS temp folder: every Item's subtype/enabled/position/asset plus
     /// every item-enable script call in the tree. Off by default; useful when a scene renders the wrong
     /// sprite or picks a mid-animation frame.
     /// </summary>
@@ -127,7 +127,7 @@ public sealed class AppSettings
     }
 
     /// <summary>
-    /// Loads settings from <c>%APPDATA%\TLJExplorer\settings.json</c>. If the file is missing, unreadable,
+    /// Loads settings from <c>TLJExplorer/settings.json</c> under the OS's roaming app-data folder. If the file is missing, unreadable,
     /// or fails to deserialize, this returns a default-constructed <see cref="AppSettings"/> instead of
     /// throwing.
     /// </summary>
@@ -150,7 +150,7 @@ public sealed class AppSettings
     }
 
     /// <summary>
-    /// Writes these settings to <c>%APPDATA%\TLJExplorer\settings.json</c>, creating the containing
+    /// Writes these settings to <c>TLJExplorer/settings.json</c> under the OS's roaming app-data folder, creating the containing
     /// directory if it doesn't already exist.
     /// </summary>
     public void Save()

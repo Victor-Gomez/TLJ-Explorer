@@ -1,6 +1,6 @@
 # TLJ Explorer
 
-A Windows viewer for the game assets of **The Longest Journey** (2000). Browse a TLJ install like a
+A cross-platform viewer for the game assets of **The Longest Journey** (2000). Browse a TLJ install like a
 file tree and preview its images, textures, sounds, videos, 3D models and animations, XRC resource
 trees, and static composites of individual rooms.
 
@@ -26,25 +26,26 @@ trees, and static composites of individual rooms.
 
 ## Building
 
-Requires **.NET 10 SDK** on Windows (WPF).
+Requires the **.NET 10 SDK**. Builds and runs on Windows and Linux (Avalonia UI).
 
 ```
 dotnet build TLJExplorer.sln
 dotnet run --project src/TLJExplorer
 ```
 
-The scene viewer's animated overlays are extracted via `ffmpeg.exe`, which the app expects to find at
-`ffmpeg\ffmpeg.exe` next to the built binary. Drop a static Windows ffmpeg build there or point
-`AppSettings.FfmpegPath` at another location.
+The scene viewer's animated overlays are extracted via ffmpeg, which the app expects to find at
+`ffmpeg/ffmpeg.exe` (Windows) or `ffmpeg/ffmpeg` (Linux/macOS) next to the built binary. Drop a static
+ffmpeg build there, install it via your platform's usual channel and point `AppSettings.FfmpegPath` at
+it, or set the path from Options → Settings → External Tools.
 
 ## Project layout
 
-- `src/TLJExplorer.Core/` — format decoders and virtual filesystem. Engine-agnostic; no WPF, no GL.
+- `src/TLJExplorer.Core/` — format decoders and virtual filesystem. Engine-agnostic; no UI framework, no GL.
   - `Formats/` — XMG, TM, XRC, CIR, ANI, ISN, Ogg, BIFF, hex-dump.
   - `FileSystem/` — `.xarc` archive reader plus the virtual tree built from it.
   - `Settings/` — persisted user preferences.
-- `src/TLJExplorer/` — WPF UI.
-  - `MainWindow.xaml` + code-behind — the browser, previewer, and scene viewer.
+- `src/TLJExplorer/` — Avalonia UI.
+  - `MainWindow.axaml` + code-behind — the browser, previewer, and scene viewer.
   - `Rendering/` — the OpenGL model renderer, skeleton posing, and scene compositor.
   - `Services/` — resource loading, ffmpeg driver, temp-file scratch dir, model catalog.
   - `ViewModels/` — the lazy tree-view wrapper around the virtual filesystem.
@@ -53,8 +54,8 @@ The scene viewer's animated overlays are extracted via `ffmpeg.exe`, which the a
 
 Toggle **Options → Dump Scene Diagnostics** to write a per-scene table (every item's subtype,
 `enabled` flag, position, asset filename, and every item-enable script call) to
-`%TEMP%\TLJExplorer_last_scene_items.txt` each time a scene folder is opened. Useful when a room
-renders the wrong sprite or picks a mid-animation frame.
+`TLJExplorer_last_scene_items.txt` in the OS temp folder each time a scene folder is opened. Useful
+when a room renders the wrong sprite or picks a mid-animation frame.
 
 ## Status
 
