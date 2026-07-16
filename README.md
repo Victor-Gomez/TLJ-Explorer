@@ -38,6 +38,11 @@ The scene viewer's animated overlays are extracted via ffmpeg, which the app exp
 ffmpeg build there, install it via your platform's usual channel and point `AppSettings.FfmpegPath` at
 it, or set the path from Options → Settings → External Tools.
 
+Sound and video playback are backed by [LibVLC](https://www.videolan.org/vlc/libvlc.html). The Windows
+build bundles it via NuGet; on Linux, install it from your distro's package manager (e.g.
+`sudo apt install libvlc-dev vlc` on Debian/Ubuntu) since there's no redistributable NuGet package for
+it on that platform.
+
 ## Project layout
 
 - `src/TLJExplorer.Core/` — format decoders and virtual filesystem. Engine-agnostic; no UI framework, no GL.
