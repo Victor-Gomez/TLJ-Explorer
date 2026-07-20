@@ -1729,16 +1729,24 @@ public partial class MainWindow : Window
         if (scene is null)
         {
             // Not a scene folder. Surface the reason in-panel so the user isn't left staring at a black
-            // pane -- LoadScene returns null when there's no <folderName>.xrc sibling, or when the XRC has
-            // no drawable layers. Show what we were looking for so mismatches are easy to spot.
+            // pane -- LoadScene returns null when there's no .xrc child at all, or when every .xrc in the
+            // folder decoded but yielded no drawable backdrop/layers (item-container XRCs, sound-only
+            // scenes, etc.). Tailor the message to which case actually happened so the reader isn't
+            // sent looking for a file that's plainly in the tree.
             string expected = folder.Name + ".xrc";
-            bool anyXrc = folder.Children.Any(c =>
-                (c.NodeType & FsNodeType.File) != 0 &&
-                c.Name.EndsWith(".xrc", StringComparison.OrdinalIgnoreCase));
-            string detail = anyXrc
-                ? $"The folder contains .xrc files, but none is named \"{expected}\", so it isn't a scene root."
-                : $"No .xrc file inside this folder -- not a scene root.";
-            SceneStatusText.Text = $"Not a renderable scene folder.  Looked for \"{expected}\".  {detail}";
+            List<string> xrcNames = folder.Children
+                .Where(c => (c.NodeType & FsNodeType.File) != 0 &&
+                            c.Name.EndsWith(".xrc", StringComparison.OrdinalIgnoreCase))
+                .Select(c => c.Name)
+                .ToList();
+
+            string detail;
+            if (xrcNames.Count == 0)
+                detail = "No .xrc file inside this folder -- not a scene root.";
+            else
+                detail = $"Tried {string.Join(", ", xrcNames.Select(n => $"\"{n}\""))}; none declared a drawable backdrop or layers.";
+
+            SceneStatusText.Text = $"Not a renderable scene folder.  {detail}";
             ScenePanel.IsVisible = true;
             return;
         }
