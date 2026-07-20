@@ -55,6 +55,15 @@ public sealed class LibVlcMediaPlayer : IDisposable
         NativePlayer.Media = null;
     }
 
+    /// <summary>
+    /// Fire-and-forget variant of <see cref="Close"/> that runs off the UI thread. <c>NativePlayer.Stop</c>
+    /// is synchronous and, when a track is actively playing, can block for tens to hundreds of ms while
+    /// LibVLC tears down its decoder/output -- long enough to visibly stall a tree click. Returns as soon
+    /// as the background task is queued; LibVLC's own APIs are thread-safe, so subsequent calls (Open on a
+    /// new track) can happen immediately without racing.
+    /// </summary>
+    public void CloseAsync() => Task.Run(Close);
+
     public bool HasDurationTimeSpan => NativePlayer.Length >= 0;
 
     /// <summary>Media duration, or <see langword="null"/> if not yet known (mirrors WPF's

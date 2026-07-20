@@ -112,13 +112,10 @@ public sealed class VirtualFileSystem
 
         foreach (FsNode fileNode in EnumerateFiles(root))
         {
-            if ((fileNode.NodeType & FsNodeType.InArchive) == 0)
-                continue;
-
             AddToIndex(byName, fileNode.Name, fileNode);
 
-            if (fileNode.Name.EndsWith(".xmg", StringComparison.OrdinalIgnoreCase))
-                AddToIndex(byName, Path.ChangeExtension(fileNode.Name, ".png"), fileNode);
+            foreach (string modName in SwapArchiveToModCandidates(fileNode.Name))
+                AddToIndex(byName, modName, fileNode);
         }
 
         foreach (string modFile in Directory.EnumerateFiles(externalModsDir, "*", SearchOption.AllDirectories))
@@ -343,22 +340,63 @@ public sealed class VirtualFileSystem
     /// Locates the archive entry a loose mod file overrides. Handles both the trivial case (same name
     /// as an archive entry) and Stark's extension-swap conventions: a <c>.png</c> mod file overrides the
     /// <c>.xmg</c> archive entry with the same stem (see <c>engines/stark/resources/image.cpp</c>
-    /// <c>loadPNGOverride</c>). Extend here when new swap rules turn up in ScummVM.
+    /// <c>loadPNGOverride</c>), and the container-passthrough swaps <c>.bik→.bbb</c>, <c>.smk→.sss</c>,
+    /// <c>.ogg→.ovs</c> (see <see cref="Formats.ContainerUnwrap"/>) so mods can ship the well-known
+    /// media file directly instead of the TLJ-renamed archive extension.
     /// </summary>
     private static FsNode? ResolveModTarget(Dictionary<string, FsNode> existingByName, string looseFileName)
     {
         if (existingByName.TryGetValue(looseFileName, out FsNode? exact))
             return exact;
 
-        string ext = Path.GetExtension(looseFileName);
-        if (ext.Equals(".png", StringComparison.OrdinalIgnoreCase))
+        foreach (string swapped in SwapModToArchiveCandidates(looseFileName))
         {
-            string swapped = Path.ChangeExtension(looseFileName, ".xmg");
             if (existingByName.TryGetValue(swapped, out FsNode? viaSwap))
                 return viaSwap;
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Enumerates archive-entry names a loose mod file could override, in priority order. Videos are
+    /// tried under both container extensions (<c>.bbb</c> Bink / <c>.sss</c> Smacker) so mods that swap
+    /// codec — e.g. TLJHD replacing Smacker cutscenes with Bink — still attach.
+    /// </summary>
+    private static IEnumerable<string> SwapModToArchiveCandidates(string modFileName)
+    {
+        string ext = Path.GetExtension(modFileName);
+        string[] archiveExts = ext.ToLowerInvariant() switch
+        {
+            ".png" => [".xmg"],
+            ".bik" => [".bbb", ".sss"],
+            ".smk" => [".sss", ".bbb"],
+            ".ogg" => [".ovs"],
+            _ => [],
+        };
+
+        foreach (string archiveExt in archiveExts)
+            yield return Path.ChangeExtension(modFileName, archiveExt);
+    }
+
+    /// <summary>
+    /// Inverse of <see cref="SwapModToArchiveCandidates"/>: given an archive-entry name, returns the
+    /// mod-file names that would override it. Videos accept either container extension.
+    /// </summary>
+    private static IEnumerable<string> SwapArchiveToModCandidates(string archiveFileName)
+    {
+        string ext = Path.GetExtension(archiveFileName);
+        string[] modExts = ext.ToLowerInvariant() switch
+        {
+            ".xmg" => [".png"],
+            ".bbb" => [".bik", ".smk"],
+            ".sss" => [".smk", ".bik"],
+            ".ovs" => [".ogg"],
+            _ => [],
+        };
+
+        foreach (string modExt in modExts)
+            yield return Path.ChangeExtension(archiveFileName, modExt);
     }
 
     /// <summary>

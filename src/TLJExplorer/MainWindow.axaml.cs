@@ -48,11 +48,40 @@ public partial class MainWindow : Window
     {
         var player = new LibVlcMediaPlayer();
         player.MediaEnded += VideoPlayer_MediaEnded;
-        VideoPlayer.MediaPlayer = player.NativePlayer;
+        player.MediaOpened += VideoPlayer_MediaOpened;
+
+        // TimeChanged fires on LibVLC's callback thread; marshal to the UI thread and use it to preempt
+        // the natural end of playback. If we let the video reach End, LibVLC releases the video output
+        // and the VideoView paints black -- rewinding-and-pausing just before End keeps the surface
+        // alive and renders frame 0 for the user to see.
+        player.NativePlayer.TimeChanged += (_, args) =>
+        {
+            long timeMs = args.Time;
+            Dispatcher.UIThread.Post(() => HandleVideoTimeChanged(timeMs));
+        };
+
+        // Bind to the VideoView only once its NativeControlHost has been attached to the visual tree --
+        // the VideoPanel starts hidden, so during warm-up the child native window doesn't exist yet and
+        // MediaPlayer.Hwnd would stay IntPtr.Zero. Play() then falls back to spawning a separate top-level
+        // "VLC (Direct3D11 output)" window instead of rendering into our embedded surface.
+        if (VideoPlayer.GetVisualRoot() is not null)
+            VideoPlayer.MediaPlayer = player.NativePlayer;
+        else
+            VideoPlayer.AttachedToVisualTree += AttachOnce;
+
+        void AttachOnce(object? sender, VisualTreeAttachmentEventArgs e)
+        {
+            VideoPlayer.AttachedToVisualTree -= AttachOnce;
+            VideoPlayer.MediaPlayer = player.NativePlayer;
+        }
+
         return player;
     }
 
     private readonly DispatcherTimer _positionTimer;
+    private readonly DispatcherTimer _videoPositionTimer;
+    private bool _videoSliderDragging;
+    private bool _videoDurationKnown;
 
     private readonly DispatcherTimer _searchDebounceTimer;
 
@@ -69,7 +98,6 @@ public partial class MainWindow : Window
     private readonly ScaleTransform _imageCompareSideOriginalScale = new();
     private readonly ScaleTransform _imageCompareSideModScale = new();
     private readonly ScaleTransform _sceneScale = new();
-    private readonly ScaleTransform _videoScale = new();
     private readonly RectangleGeometry _imageCompareOriginalClip = new();
     private readonly RectangleGeometry _imageCompareModClip = new();
 
@@ -145,12 +173,14 @@ public partial class MainWindow : Window
         ImageCompareSideOriginalTransformHost.LayoutTransform = _imageCompareSideOriginalScale;
         ImageCompareSideModTransformHost.LayoutTransform = _imageCompareSideModScale;
         SceneTransformHost.LayoutTransform = _sceneScale;
-        VideoTransformHost.LayoutTransform = _videoScale;
         ImageCompareOriginalImage.Clip = _imageCompareOriginalClip;
         ImageCompareModImage.Clip = _imageCompareModClip;
 
         _positionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _positionTimer.Tick += PositionTimer_Tick;
+
+        _videoPositionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _videoPositionTimer.Tick += VideoPositionTimer_Tick;
 
         _searchDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
         _searchDebounceTimer.Tick += (_, _) =>
@@ -211,6 +241,10 @@ public partial class MainWindow : Window
         ImageCompareSideModScroll.PointerPressed += ImageComparePanScroll_PointerPressed;
         ImageCompareSideModScroll.PointerMoved += ImageComparePanScroll_PointerMoved;
         ImageCompareSideModScroll.PointerReleased += ImageComparePanScroll_PointerReleased;
+
+        SceneScrollViewer.PointerPressed += SceneScrollViewer_PointerPressed;
+        SceneScrollViewer.PointerMoved += SceneScrollViewer_PointerMoved;
+        SceneScrollViewer.PointerReleased += SceneScrollViewer_PointerReleased;
 
         _initialized = true;
     }
@@ -459,7 +493,7 @@ public partial class MainWindow : Window
 
         bool Matches(FsNode node) =>
             (!hideLocalized || !node.IsLocalized) &&
-            typeFilter.Matches(node.Name) &&
+            typeFilter.Matches(node) &&
             (searchText.Length == 0 || MatchesSearch(node, searchText));
 
         static string? ExtractSubtitleMatch(FsNode node, string searchText)
@@ -562,8 +596,26 @@ public partial class MainWindow : Window
     private void BringVmIntoViewAndSelect(FsNodeViewModel vm)
     {
         Tree.SelectedItem = vm;
+
+        // Reset scroll to the top-left before asking Avalonia to bring the selection into view.
+        // Without this, TreeView's initial state after populating a big expanded tree can leave the
+        // ScrollViewer scrolled to the bottom, and if TreeContainerFromItem returns null (deep node
+        // whose container hasn't been materialized yet) BringIntoView is a no-op — so the user sees
+        // the bottom of the tree instead of the restored selection.
+        if (Tree.FindDescendantOfType<ScrollViewer>() is { } sv)
+            sv.Offset = default;
+
         if (Tree.TreeContainerFromItem(vm) is { } container)
             container.BringIntoView();
+
+        // BringIntoView also scrolls horizontally to reveal deep items, which pushes their ancestor
+        // indentation off the left edge. Snap X back to 0 after the scroll settles so the hierarchy
+        // stays readable; keep whatever Y BringIntoView chose so the selection remains visible.
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (Tree.FindDescendantOfType<ScrollViewer>() is { } sv2)
+                sv2.Offset = sv2.Offset.WithX(0);
+        }, DispatcherPriority.Background);
     }
 
     /// <summary>
@@ -682,10 +734,27 @@ public partial class MainWindow : Window
             return;
         }
 
+        // "Raw" means the underlying file bytes verbatim -- for an .xmg the user wants the .xmg back,
+        // not a hex dump. Preserve the source extension so the exported file round-trips through the
+        // engine's decoders (or any external tool that recognizes the format).
+        string extension = Path.GetExtension(_selectedNode.Name).TrimStart('.');
+        if (string.IsNullOrEmpty(extension))
+            extension = "bin";
+        string defaultName = SanitizeFileName(Path.GetFileNameWithoutExtension(_selectedNode.Name)) + "." + extension;
+
+        string? path = await Dialogs.ShowSaveFileDialog(
+            this, "Export Raw", defaultName,
+            [new Avalonia.Platform.Storage.FilePickerFileType($"{extension.ToUpperInvariant()} file (*.{extension})") { Patterns = [$"*.{extension}"] }],
+            _settings.LastExportDir);
+        if (path is null)
+            return;
+
         try
         {
-            TextResource raw = ResourceLoader.LoadRawForced(_selectedNode, _vfs);
-            await ExportText(raw.Text, "txt", Path.GetFileNameWithoutExtension(_selectedNode.Name) + "_raw");
+            using Stream source = _vfs.OpenFile(_selectedNode);
+            using FileStream dest = File.Create(path);
+            await source.CopyToAsync(dest);
+            RememberExportFolder(path);
         }
         catch (Exception ex)
         {
@@ -1637,15 +1706,40 @@ public partial class MainWindow : Window
         AppSettings settings = _settings;
         TempFileTracker tempFiles = _tempFiles;
 
-        ResourceContent? scene = await Task.Run(
-            () => ResourceLoader.LoadScene(folder, vfs, settings, tempFiles));
+        Log.Info($"LoadSelectedFolder gen={generation} path=\"{folder.GetPath()}\" name=\"{folder.Name}\" children={folder.Children.Count}");
+
+        ResourceContent? scene;
+        try
+        {
+            scene = await Task.Run(
+                () => ResourceLoader.LoadScene(folder, vfs, settings, tempFiles));
+        }
+        catch (Exception ex)
+        {
+            Log.Exception($"LoadSelectedFolder gen={generation}", ex);
+            scene = new ErrorResource(
+                $"Scene load threw an exception for \"{folder.GetPath()}\":\n{ex.GetType().Name}: {ex.Message}\n\n{ex.StackTrace}");
+        }
+
+        Log.Info($"LoadSelectedFolder gen={generation} result={scene?.GetType().Name ?? "null"}");
 
         if (generation != _sceneLoadGeneration)
             return;
 
         if (scene is null)
         {
-            ClearContentPanels();
+            // Not a scene folder. Surface the reason in-panel so the user isn't left staring at a black
+            // pane -- LoadScene returns null when there's no <folderName>.xrc sibling, or when the XRC has
+            // no drawable layers. Show what we were looking for so mismatches are easy to spot.
+            string expected = folder.Name + ".xrc";
+            bool anyXrc = folder.Children.Any(c =>
+                (c.NodeType & FsNodeType.File) != 0 &&
+                c.Name.EndsWith(".xrc", StringComparison.OrdinalIgnoreCase));
+            string detail = anyXrc
+                ? $"The folder contains .xrc files, but none is named \"{expected}\", so it isn't a scene root."
+                : $"No .xrc file inside this folder -- not a scene root.";
+            SceneStatusText.Text = $"Not a renderable scene folder.  Looked for \"{expected}\".  {detail}";
+            ScenePanel.IsVisible = true;
             return;
         }
 
@@ -2231,6 +2325,12 @@ public partial class MainWindow : Window
         StopSceneAnimation();
 
         SceneBaseImage.Source = scene.Base;
+        // Canvas measures children with an infinite constraint, and Avalonia's Image control returns
+        // DesiredSize=0 in that case unless it has an explicit Width/Height. Overlays already get
+        // theirs set (see the loop below) -- do the same for the backdrop so it actually paints, rather
+        // than laying out at 0x0 and leaving the panel's black background showing through.
+        SceneBaseImage.Width = scene.Base.PixelSize.Width;
+        SceneBaseImage.Height = scene.Base.PixelSize.Height;
         SceneCanvas.Width = scene.Base.PixelSize.Width;
         SceneCanvas.Height = scene.Base.PixelSize.Height;
 
@@ -2247,8 +2347,8 @@ public partial class MainWindow : Window
             var img = new Image
             {
                 Source = overlay.Frames[0],
-                Width = overlay.Frames[0].PixelSize.Width,
-                Height = overlay.Frames[0].PixelSize.Height,
+                Width = overlay.Width,
+                Height = overlay.Height,
             };
             RenderOptions.SetBitmapInterpolationMode(img, BitmapInterpolationMode.None);
             Canvas.SetLeft(img, overlay.X);
@@ -2422,6 +2522,41 @@ public partial class MainWindow : Window
 
         e.Handled = true;
         SetSceneZoom(e.Delta.Y > 0 ? _sceneZoom * 1.25 : _sceneZoom / 1.25);
+    }
+
+    // Click-drag pan mirrors the ImagePanel viewer: capture the pointer + starting offsets on press,
+    // update Offset in Moved by the delta, release on up. Reuses _panStart/_panStartH/VOffset since the
+    // Image and Scene panels are never visible simultaneously.
+    private void SceneScrollViewer_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (SceneBaseImage.Source is null)
+            return;
+        if (e.GetCurrentPoint(SceneScrollViewer).Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed)
+            return;
+
+        _panStart = e.GetPosition(SceneScrollViewer);
+        _panStartHOffset = SceneScrollViewer.Offset.X;
+        _panStartVOffset = SceneScrollViewer.Offset.Y;
+        e.Pointer.Capture(SceneScrollViewer);
+        SceneScrollViewer.Cursor = new Cursor(StandardCursorType.SizeAll);
+    }
+
+    private void SceneScrollViewer_PointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_panStart is not { } start || !e.GetCurrentPoint(SceneScrollViewer).Properties.IsLeftButtonPressed)
+            return;
+
+        Point pos = e.GetPosition(SceneScrollViewer);
+        SceneScrollViewer.Offset = new Vector(
+            _panStartHOffset - (pos.X - start.X),
+            _panStartVOffset - (pos.Y - start.Y));
+    }
+
+    private void SceneScrollViewer_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _panStart = null;
+        e.Pointer.Capture(null);
+        SceneScrollViewer.Cursor = Cursor.Default;
     }
 
     // ---------------------------------------------------------------------
@@ -3247,7 +3382,10 @@ public partial class MainWindow : Window
     private void StopSound()
     {
         _positionTimer.Stop();
-        _mediaPlayer.Close();
+        // CloseAsync so a tree click that switches away from a currently-playing sound doesn't wait
+        // for LibVLC's synchronous Stop -- see LibVlcMediaPlayer.CloseAsync. Subsequent Open on a new
+        // sound races safely (LibVLC's own APIs are thread-safe).
+        _mediaPlayer.CloseAsync();
         WaveformImage.Source = null;
     }
 
@@ -3361,7 +3499,7 @@ public partial class MainWindow : Window
         VideoPanel.IsVisible = true;
         VideoLabel.Text = $"{video.Kind} video -- transcoding for playback...";
         VideoPlayPauseButton.IsEnabled = false;
-        _videoPlayer.Close();
+        _videoPlayer.CloseAsync();
 
         if (!await EnsureFfmpegAvailable())
         {
@@ -3374,7 +3512,10 @@ public partial class MainWindow : Window
         string ffmpegPath = _settings.FfmpegPath;
         string rawPath = video.TempFilePath;
         string? bgColor = _settings.RemoveVideoBackground ? _settings.VideoBackgroundColor : null;
-        string overlayColor = _settings.VideoOverlayColor;
+        // Overlay onto the actual current panel background so the chroma-keyed rectangle blends in
+        // rather than sitting on the hardcoded "202020" fallback (which no longer matches once the
+        // Fluent theme background differs -- e.g. light theme, or a slightly-different dark shade).
+        string overlayColor = ResolveOverlayColorFromBackground();
 
         TranscodeResult result = await Task.Run(() => FfmpegTranscoder.TranscodeToMp4(rawPath, ffmpegPath, _tempFiles, bgColor, overlayColor));
 
@@ -3388,19 +3529,133 @@ public partial class MainWindow : Window
         }
 
         VideoLabel.Text = $"{video.Kind} video";
+        // Belt-and-braces: re-bind here just before playback. The initial bind in CreateVideoPlayer runs
+        // during warm-up while VideoPanel is still hidden; if for any reason the VideoView's native child
+        // window wasn't ready then, Play() would fall back to a separate "VLC (Direct3D11 output)" window.
+        // Re-assigning at this point (post-await, panel visible and laid out) guarantees the HWND is set.
+        VideoPlayer.MediaPlayer = _videoPlayer.NativePlayer;
+
+        // Reset the transport UI. Duration is unknown until LibVLC's LengthChanged event fires
+        // (see VideoPlayer_MediaOpened) -- until then, seek is disabled and the totals read "--:--".
+        _videoDurationKnown = false;
+        _videoSliderDragging = false;
+        VideoScrubSlider.IsEnabled = false;
+        VideoScrubSlider.Maximum = 1;
+        VideoScrubSlider.Value = 0;
+        VideoCurrentTimeText.Text = "0:00";
+        VideoTotalTimeText.Text = "--:--";
+
         _videoPlayer.Open(result.OutputPath!);
         if (_settings.AutoPlayVideo)
         {
             _videoPlayer.Play();
             _videoIsPlaying = true;
-            VideoPlayPauseButton.Content = "Pause";
+            SetVideoPlayPauseIcon(playing: true);
+            _videoPositionTimer.Start();
         }
         else
         {
             _videoIsPlaying = false;
-            VideoPlayPauseButton.Content = "Play";
+            SetVideoPlayPauseIcon(playing: false);
         }
         VideoPlayPauseButton.IsEnabled = true;
+    }
+
+    private void SetVideoPlayPauseIcon(bool playing) =>
+        VideoPlayPauseIcon.Source = (IImage)Application.Current!.FindResource(playing ? "PauseIcon" : "PlayIcon")!;
+
+    private void VideoPlayer_MediaOpened(object? sender, EventArgs e)
+    {
+        if (!_videoPlayer.HasDurationTimeSpan)
+            return;
+
+        _videoDurationKnown = true;
+        double seconds = _videoPlayer.Duration!.Value.TotalSeconds;
+        VideoScrubSlider.Maximum = Math.Max(0.01, seconds);
+        VideoScrubSlider.IsEnabled = true;
+        UpdateVideoTimeReadout();
+    }
+
+    private void VideoPositionTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_videoSliderDragging && _videoDurationKnown)
+            VideoScrubSlider.Value = _videoPlayer.Position.TotalSeconds;
+        UpdateVideoTimeReadout();
+    }
+
+    private void UpdateVideoTimeReadout()
+    {
+        VideoCurrentTimeText.Text = FormatSoundTime(_videoPlayer.Position);
+        VideoTotalTimeText.Text = _videoDurationKnown
+            ? FormatSoundTime(_videoPlayer.Duration ?? TimeSpan.Zero)
+            : "--:--";
+    }
+
+    private void VideoScrubSlider_PointerPressed(object? sender, PointerPressedEventArgs e) => _videoSliderDragging = true;
+
+    private void VideoScrubSlider_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _videoSliderDragging = false;
+        if (_videoDurationKnown)
+            _videoPlayer.Position = TimeSpan.FromSeconds(VideoScrubSlider.Value);
+    }
+
+    private void VideoScrubSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        // Keep the current-time readout in sync while the user drags the thumb, even though playback
+        // position doesn't change until pointer-release. Guard on drag state so timer-driven writes
+        // (which come from _videoPlayer.Position directly) don't trigger a redundant readout refresh.
+        if (_videoSliderDragging)
+            VideoCurrentTimeText.Text = FormatSoundTime(TimeSpan.FromSeconds(VideoScrubSlider.Value));
+    }
+
+    private void VideoStopButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_currentVideo is null)
+            return;
+        _videoPlayer.Stop();
+        _videoPlayer.Position = TimeSpan.Zero;
+        _videoPositionTimer.Stop();
+        _videoIsPlaying = false;
+        VideoScrubSlider.Value = 0;
+        SetVideoPlayPauseIcon(playing: false);
+        UpdateVideoTimeReadout();
+    }
+
+    /// <summary>
+    /// Returns the app's actual panel background as a 6-hex-digit RRGGBB string suitable for ffmpeg's
+    /// <c>color=c=0x...</c> source. Reads Window.Background (which resolves to the Fluent theme brush
+    /// unless overridden), falls back to the setting-configured overlay color when the background isn't
+    /// a plain SolidColorBrush (e.g. custom gradient) so we still produce something usable.
+    /// </summary>
+    private string ResolveOverlayColorFromBackground()
+    {
+        if (Background is SolidColorBrush { Color: var c })
+            return $"{c.R:X2}{c.G:X2}{c.B:X2}";
+
+        // Try the closest ancestor of VideoPanel that has a solid background.
+        for (var v = (Visual?)VideoPanel; v is not null; v = v.GetVisualParent())
+        {
+            IBrush? bg = v switch
+            {
+                Panel p => p.Background,
+                Border b => b.Background,
+                TemplatedControl tc => tc.Background,
+                _ => null,
+            };
+            if (bg is SolidColorBrush { Color: var cc })
+                return $"{cc.R:X2}{cc.G:X2}{cc.B:X2}";
+        }
+
+        // Last resort: the theme brush Fluent uses for the app-shell background.
+        if (Application.Current?.TryGetResource("SolidBackgroundFillColorBaseBrush",
+                Application.Current.ActualThemeVariant, out object? resource) == true
+            && resource is SolidColorBrush { Color: var themeColor })
+        {
+            return $"{themeColor.R:X2}{themeColor.G:X2}{themeColor.B:X2}";
+        }
+
+        return _settings.VideoOverlayColor;
     }
 
     private void RemoveBackground_Changed(object? sender, RoutedEventArgs e)
@@ -3411,15 +3666,22 @@ public partial class MainWindow : Window
             _ = TranscodeAndPlayAsync(_currentVideo);
     }
 
+    // Base "100% zoom" video surface size in DIPs. Zoom scales VideoPlayer.Width/Height directly rather
+    // than applying a ScaleTransform: VideoView is a NativeControlHost, so its child native window is
+    // outside Avalonia's compositor and any LayoutTransform on it is a no-op. Changing Width/Height makes
+    // the NativeControlHost re-size the actual native surface, which is the only way to zoom the video.
+    private const double VideoBaseWidth = 640;
+    private const double VideoBaseHeight = 360;
+
     private void VideoZoomSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        // ValueChanged fires during XAML init before _videoScale/VideoZoomLabel are constructed.
-        if (_videoScale is null || VideoZoomLabel is null)
+        // ValueChanged fires during XAML init before VideoPlayer/VideoZoomLabel are constructed.
+        if (VideoPlayer is null || VideoZoomLabel is null)
             return;
 
         double zoom = VideoZoomSlider.Value / 100.0;
-        _videoScale.ScaleX = zoom;
-        _videoScale.ScaleY = zoom;
+        VideoPlayer.Width = VideoBaseWidth * zoom;
+        VideoPlayer.Height = VideoBaseHeight * zoom;
         VideoZoomLabel.Text = $"{VideoZoomSlider.Value:0}%";
     }
 
@@ -3435,8 +3697,9 @@ public partial class MainWindow : Window
     {
         _videoLoadGeneration++;
         _videoIsPlaying = false;
+        _videoPositionTimer.Stop();
         _currentVideo = null;
-        _videoPlayer.Close();
+        _videoPlayer.CloseAsync();
     }
 
     private void VideoPlayPauseButton_Click(object? sender, RoutedEventArgs e)
@@ -3448,23 +3711,58 @@ public partial class MainWindow : Window
         {
             _videoPlayer.Pause();
             _videoIsPlaying = false;
-            VideoPlayPauseButton.Content = "Play";
+            _videoPositionTimer.Stop();
+            SetVideoPlayPauseIcon(playing: false);
         }
         else
         {
             _videoPlayer.Play();
             _videoIsPlaying = true;
-            VideoPlayPauseButton.Content = "Pause";
+            _videoPositionTimer.Start();
+            SetVideoPlayPauseIcon(playing: true);
         }
     }
 
     private void VideoPlayer_MediaEnded(object? sender, EventArgs e)
     {
-        // Rewind and pause; user can hit Play to loop.
+        // Fallback path: TimeChanged didn't fire close enough to the end to preempt, so LibVLC
+        // reached Ended state and released the video output (VideoView is now black). Stop+Play+Pause
+        // brings the player back into a state where seeking to 0 can render frame 0 -- LibVLC won't
+        // decode a frame from the Ended state directly.
+        _videoIsPlaying = false;
+        _videoPositionTimer.Stop();
+        _videoPlayer.Stop();
+        _videoPlayer.Play();
+        _videoPlayer.Pause();
+        _videoPlayer.Position = TimeSpan.Zero;
+        VideoScrubSlider.Value = 0;
+        SetVideoPlayPauseIcon(playing: false);
+        UpdateVideoTimeReadout();
+    }
+
+    /// <summary>
+    /// Marshaled onto the UI thread from LibVLC's TimeChanged callback. When playback approaches the end
+    /// of the media, rewinds to the start and pauses so LibVLC never reaches Ended state -- the video
+    /// output stays alive and continues showing frame 0 instead of going black.
+    /// </summary>
+    private void HandleVideoTimeChanged(long timeMs)
+    {
+        if (!_videoIsPlaying || !_videoDurationKnown)
+            return;
+
+        long totalMs = (long)_videoPlayer.Duration!.Value.TotalMilliseconds;
+        // ~200ms guardband: TimeChanged fires roughly every 250ms, so this makes it likely we catch the
+        // tick before LibVLC's own end-of-stream transition. If we clip too much of the tail, lower it.
+        if (timeMs < totalMs - 200)
+            return;
+
         _videoPlayer.Position = TimeSpan.Zero;
         _videoPlayer.Pause();
         _videoIsPlaying = false;
-        VideoPlayPauseButton.Content = "Play";
+        _videoPositionTimer.Stop();
+        VideoScrubSlider.Value = 0;
+        SetVideoPlayPauseIcon(playing: false);
+        UpdateVideoTimeReadout();
     }
 
     private void OpenExternalButton_Click(object? sender, RoutedEventArgs e)

@@ -65,5 +65,7 @@ public sealed record SceneAnimatedOverlay(
     string Name,
     int X,
     int Y,
+    int Width,
+    int Height,
     IReadOnlyList<Bitmap> Frames,
     double Fps);

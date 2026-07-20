@@ -70,7 +70,7 @@ public static class ResourceLoader
         try
         {
             using Stream stream = OpenBuffered(vfs, node, variant);
-            string ext = Path.GetExtension(node.Name).ToLowerInvariant();
+            string ext = EffectiveExtension(node, vfs, variant);
 
             return ext switch
             {
@@ -78,8 +78,8 @@ public static class ResourceLoader
                 ".tm" => LoadTm(node, stream, settings),
                 ".ovs" => LoadOvsSound(node, stream, tempFiles),
                 ".isn" or ".iss" or ".ssn" or ".sn" => LoadIsnSound(node, stream, tempFiles),
-                ".sss" => LoadVideo(stream, tempFiles, ".smk", "Smacker"),
-                ".bbb" => LoadVideo(stream, tempFiles, ".bik", "Bink"),
+                ".sss" or ".smk" => LoadVideo(stream, tempFiles, ".smk", "Smacker"),
+                ".bbb" or ".bik" => LoadVideo(stream, tempFiles, ".bik", "Bink"),
                 ".cir" => LoadCir(node, stream),
                 ".ani" => LoadAni(node, stream),
                 ".xrc" => new TextResource(XrcDisplayDump.DumpAsText(stream)),
@@ -106,44 +106,71 @@ public static class ResourceLoader
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(tempFiles);
 
+        // Collect every .xrc child and try them in priority order: the canonical <folderName>.xrc first
+        // (which matches the packer convention when it holds), then the rest -- the archive's internal
+        // folder name (e.g. numeric IDs like "00") doesn't always align with what the packer named the
+        // XRC file, so we fall through to any .xrc that yields a compositable scene. First one to produce
+        // a non-null Composition wins; the others are treated as subordinate data and ignored.
         string expectedName = folder.Name + ".xrc";
-        FsNode? xrcNode = folder.Children.FirstOrDefault(c =>
-            (c.NodeType & FsNodeType.File) != 0 &&
-            c.Name.Equals(expectedName, StringComparison.OrdinalIgnoreCase));
+        List<FsNode> xrcCandidates = folder.Children
+            .Where(c => (c.NodeType & FsNodeType.File) != 0 &&
+                        c.Name.EndsWith(".xrc", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(c => c.Name.Equals(expectedName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
-        if (xrcNode is null)
+        Log.Info($"LoadScene folder=\"{folder.Name}\" expected=\"{expectedName}\" candidates={xrcCandidates.Count} childCount={folder.Children.Count}");
+
+        if (xrcCandidates.Count == 0)
+        {
+            foreach (FsNode c in folder.Children.Take(50))
+                Log.Info($"  child: name=\"{c.Name}\" type={c.NodeType}");
             return null;
+        }
 
-        try
+        Exception? lastException = null;
+        foreach (FsNode xrcNode in xrcCandidates)
         {
-            IReadOnlyList<XrcSceneLayer> layers;
-            using (Stream stream = vfs.OpenFile(xrcNode))
-                layers = XrcSceneModel.Read(stream);
-
-            // Opt-in diagnostic dump: toggle "Dump Scene Diagnostics" in the Options menu to get a
-            // per-scene table of every Item's subtype/enabled/position/asset plus all item-enable
-            // script calls, written to %TEMP%\TLJExplorer_last_scene_items.txt for post-mortem
-            // inspection. Off by default -- neither costs nor artifacts on typical runs.
-            if (settings.DumpSceneDiagnostics)
+            try
             {
-                XrcSceneModel.SceneDiagnostics diagnostics;
-                using (Stream diagStream = vfs.OpenFile(xrcNode))
-                    diagnostics = XrcSceneModel.Diagnose(diagStream);
+                IReadOnlyList<XrcSceneLayer> layers;
+                using (Stream stream = vfs.OpenFile(xrcNode))
+                    layers = XrcSceneModel.Read(stream);
+                Log.Info($"LoadScene folder=\"{folder.Name}\" trying xrc=\"{xrcNode.Name}\" layers={layers.Count}");
 
-                string diagPath = Path.Combine(Path.GetTempPath(), "TLJExplorer_last_scene_items.txt");
-                File.WriteAllText(diagPath, FormatDiagnostics(folder.GetPath(), diagnostics));
+                // Opt-in diagnostic dump: toggle "Dump Scene Diagnostics" in the Options menu to get a
+                // per-scene table of every Item's subtype/enabled/position/asset plus all item-enable
+                // script calls, written to %TEMP%\TLJExplorer_last_scene_items.txt for post-mortem
+                // inspection. Off by default -- neither costs nor artifacts on typical runs.
+                if (settings.DumpSceneDiagnostics)
+                {
+                    XrcSceneModel.SceneDiagnostics diagnostics;
+                    using (Stream diagStream = vfs.OpenFile(xrcNode))
+                        diagnostics = XrcSceneModel.Diagnose(diagStream);
+
+                    string diagPath = Path.Combine(Path.GetTempPath(), "TLJExplorer_last_scene_items.txt");
+                    File.WriteAllText(diagPath, FormatDiagnostics(folder.GetPath(), diagnostics));
+                }
+
+                if (layers.Count == 0)
+                    continue;
+
+                SceneComposer.Composition? composition = SceneComposer.Compose(layers, folder, vfs, settings, tempFiles);
+                Log.Info($"LoadScene folder=\"{folder.Name}\" xrc=\"{xrcNode.Name}\" composition={(composition is null ? "null (no backdrop)" : $"{composition.Base.PixelSize.Width}x{composition.Base.PixelSize.Height}, {composition.Overlays.Count} overlay(s)")}");
+                if (composition is not null)
+                    return new SceneResource(composition.Base, composition.Overlays);
             }
-
-            if (layers.Count == 0)
-                return null;
-
-            SceneComposer.Composition? composition = SceneComposer.Compose(layers, folder, vfs, settings, tempFiles);
-            return composition is null ? null : new SceneResource(composition.Base, composition.Overlays);
+            catch (Exception ex)
+            {
+                Log.Exception($"LoadScene folder=\"{folder.Name}\" xrc=\"{xrcNode.Name}\"", ex);
+                lastException = ex;
+                // Fall through to the next candidate rather than aborting -- some XRCs in the folder
+                // may be non-scene structural data that XrcSceneModel.Read chokes on.
+            }
         }
-        catch (Exception ex)
-        {
-            return new ErrorResource($"Failed to render scene \"{folder.GetPath()}\":\n{ex.Message}");
-        }
+
+        if (lastException is not null)
+            return new ErrorResource($"Failed to render scene \"{folder.GetPath()}\":\n{lastException.Message}");
+        return null;
     }
 
     /// <summary>
@@ -276,6 +303,25 @@ public static class ResourceLoader
         }
 
         return new SoundResource(tempPath, node.ExtendedInfo);
+    }
+
+    /// <summary>
+    /// Returns the extension the loader dispatch should key on. Normally the node's own extension, but
+    /// when a mod file with a different container extension is being served (e.g. a <c>.bik</c> mod
+    /// overriding a <c>.sss</c> archive entry — TLJHD's Bink-for-Smacker swap), we key on the mod file's
+    /// extension so the temp file gets the right container extension for the downstream player.
+    /// </summary>
+    private static string EffectiveExtension(FsNode node, VirtualFileSystem vfs, VirtualFileSystem.OpenVariant variant)
+    {
+        bool servingMod = variant switch
+        {
+            VirtualFileSystem.OpenVariant.Mod => node.HasMod,
+            VirtualFileSystem.OpenVariant.Preferred => node.HasMod && vfs.LoadMods,
+            _ => false,
+        };
+
+        string source = servingMod && !string.IsNullOrEmpty(node.ModPath) ? node.ModPath! : node.Name;
+        return Path.GetExtension(source).ToLowerInvariant();
     }
 
     private static ExternalVideoResource LoadVideo(Stream stream, TempFileTracker tempFiles, string extension, string kind)

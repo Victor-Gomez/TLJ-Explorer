@@ -123,7 +123,7 @@
 
         <Grid>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300"/>
+                <ColumnDefinition Width="375"/>
                 <ColumnDefinition Width="4"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
@@ -520,23 +520,38 @@
                                     ValueChanged="VideoZoomSlider_ValueChanged"/>
                         </StackPanel>
                     </DockPanel>
-                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,16,0,0">
-                        <Button x:Name="VideoPlayPauseButton" Content="Pause" Width="80" Margin="0,0,6,0" Click="VideoPlayPauseButton_Click"/>
-                        <CheckBox x:Name="RemoveBackgroundCheck" Content="Remove background" VerticalAlignment="Center" Margin="0,0,12,0"
-                                  Checked="RemoveBackground_Changed" Unchecked="RemoveBackground_Changed"/>
-                        <Button x:Name="OpenExternalButton" Content="Open in External Player"
-                                Padding="12,6" Click="OpenExternalButton_Click"/>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                        <Slider x:Name="VideoScrubSlider" Minimum="0" Maximum="1" Value="0"
+                                PointerPressed="VideoScrubSlider_PointerPressed"
+                                PointerReleased="VideoScrubSlider_PointerReleased"
+                                ValueChanged="VideoScrubSlider_ValueChanged"/>
+                        <Grid Margin="0,2,0,10">
+                            <TextBlock x:Name="VideoCurrentTimeText" HorizontalAlignment="Left"
+                                       FontFamily="Consolas" FontSize="12" Opacity="0.8" Text="0:00"/>
+                            <TextBlock x:Name="VideoTotalTimeText" HorizontalAlignment="Right"
+                                       FontFamily="Consolas" FontSize="12" Opacity="0.8" Text="0:00"/>
+                        </Grid>
+                        <StackPanel Orientation="Horizontal">
+                            <Button x:Name="VideoPlayPauseButton" Width="48" Height="36" Margin="0,0,6,0"
+                                    Click="VideoPlayPauseButton_Click" ToolTip.Tip="Play / Pause">
+                                <Image x:Name="VideoPlayPauseIcon" Source="{StaticResource PlayIcon}" Width="18" Height="18"/>
+                            </Button>
+                            <Button x:Name="VideoStopButton" Width="48" Height="36" Margin="0,0,12,0"
+                                    Click="VideoStopButton_Click" ToolTip.Tip="Stop">
+                                <Image Source="{StaticResource StopIcon}" Width="14" Height="14"/>
+                            </Button>
+                            <CheckBox x:Name="RemoveBackgroundCheck" Content="Remove background" VerticalAlignment="Center" Margin="0,0,12,0"
+                                      Checked="RemoveBackground_Changed" Unchecked="RemoveBackground_Changed"/>
+                            <Button x:Name="OpenExternalButton" Content="Open in External Player"
+                                    Padding="12,6" Click="OpenExternalButton_Click"/>
+                        </StackPanel>
                     </StackPanel>
                     <ScrollViewer x:Name="VideoScrollViewer"
                                   HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
                         <Grid MinWidth="{Binding #VideoScrollViewer.Viewport.Width}"
                               MinHeight="{Binding #VideoScrollViewer.Viewport.Height}">
-                            <LayoutTransformControl x:Name="VideoTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <LayoutTransformControl.LayoutTransform>
-                                    <ScaleTransform ScaleX="1" ScaleY="1"/>
-                                </LayoutTransformControl.LayoutTransform>
-                                <vlc:VideoView x:Name="VideoPlayer" Width="640" Height="360"/>
-                            </LayoutTransformControl>
+                            <vlc:VideoView x:Name="VideoPlayer" Width="640" Height="360"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Grid>
                     </ScrollViewer>
                 </DockPanel>
@@ -581,12 +596,8 @@
                                       DisplayMemberBinding="{Binding DisplayName}" SelectionChanged="AnimationSelectorCombo_SelectionChanged"/>
                         </Grid>
 
-                        <StackPanel Orientation="Horizontal" Margin="4,0,4,4">
-                            <Button x:Name="ModelPlayPauseButton" Content="Play" Width="60" Margin="0,0,6,0" Click="ModelPlayPauseButton_Click"/>
-                            <CheckBox x:Name="ModelLoopCheck" Content="Loop" IsChecked="True" VerticalAlignment="Center" Margin="0,0,10,0"
-                                      Checked="ModelLoopCheck_Changed" Unchecked="ModelLoopCheck_Changed"/>
-                            <TextBlock x:Name="ModelTimeText" VerticalAlignment="Center" Opacity="0.7" Text="0.0s / 0.0s"/>
-                            <Button x:Name="ViewAniSourceButton" Padding="6,2" Margin="10,0,0,0"
+                        <DockPanel Margin="4,0,4,4" LastChildFill="True">
+                            <Button x:Name="ViewAniSourceButton" DockPanel.Dock="Right" Padding="6,2"
                                     IsVisible="False" Click="ViewAniSource_Click"
                                     ToolTip.Tip="View the currently-selected animation's decoded structure as text.">
                                 <StackPanel Orientation="Horizontal">
@@ -594,7 +605,13 @@
                                     <TextBlock Text="Source" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </Button>
-                        </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="ModelPlayPauseButton" Content="Play" Width="60" Margin="0,0,6,0" Click="ModelPlayPauseButton_Click"/>
+                                <CheckBox x:Name="ModelLoopCheck" Content="Loop" IsChecked="True" VerticalAlignment="Center" Margin="0,0,10,0"
+                                          Checked="ModelLoopCheck_Changed" Unchecked="ModelLoopCheck_Changed"/>
+                                <TextBlock x:Name="ModelTimeText" VerticalAlignment="Center" Opacity="0.7" Text="0.0s / 0.0s"/>
+                            </StackPanel>
+                        </DockPanel>
 
                         <Slider x:Name="ModelScrubSlider" Margin="4,0,4,4" Minimum="0" Maximum="1" ValueChanged="ModelScrubSlider_ValueChanged"
                                 PointerPressed="ModelScrubSlider_PointerPressed" PointerReleased="ModelScrubSlider_PointerReleased"/>
@@ -634,16 +651,16 @@
 
                         <StackPanel Orientation="Horizontal" Margin="4,2,4,6">
                             <TextBlock Text="View:" VerticalAlignment="Center" Opacity="0.7" Margin="0,0,6,0"/>
-                            <Button Content="Front" Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Front" Click="ModelOrthoView_Click"/>
-                            <Button Content="Back"  Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Back"  Click="ModelOrthoView_Click"/>
-                            <Button Content="Left"  Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Left"  Click="ModelOrthoView_Click"/>
-                            <Button Content="Right" Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Right" Click="ModelOrthoView_Click"/>
-                            <Button Content="Top"   Padding="6,2" MinWidth="42" Margin="0,0,3,0" Tag="Top"   Click="ModelOrthoView_Click"/>
-                            <Button Content="Bot"   Padding="6,2" MinWidth="42" Margin="0,0,8,0" Tag="Bottom" Click="ModelOrthoView_Click"/>
-                            <Button Padding="6,2" Click="ModelResetView_Click"
+                            <Button Content="Front" Padding="4,2" MinWidth="36" Margin="0,0,2,0" Tag="Front" Click="ModelOrthoView_Click"/>
+                            <Button Content="Back"  Padding="4,2" MinWidth="36" Margin="0,0,2,0" Tag="Back"  Click="ModelOrthoView_Click"/>
+                            <Button Content="Left"  Padding="4,2" MinWidth="36" Margin="0,0,2,0" Tag="Left"  Click="ModelOrthoView_Click"/>
+                            <Button Content="Right" Padding="4,2" MinWidth="36" Margin="0,0,2,0" Tag="Right" Click="ModelOrthoView_Click"/>
+                            <Button Content="Top"   Padding="4,2" MinWidth="36" Margin="0,0,2,0" Tag="Top"   Click="ModelOrthoView_Click"/>
+                            <Button Content="Bot"   Padding="4,2" MinWidth="36" Margin="0,0,6,0" Tag="Bottom" Click="ModelOrthoView_Click"/>
+                            <Button Padding="4,2" Click="ModelResetView_Click"
                                     ToolTip.Tip="Restore the default 3/4 orbit angle and reframe on the model.">
                                 <StackPanel Orientation="Horizontal">
-                                    <Image Source="{StaticResource ResetActionIcon}" Width="14" Height="14" Margin="0,0,4,0"/>
+                                    <Image Source="{StaticResource ResetActionIcon}" Width="14" Height="14" Margin="0,0,3,0"/>
                                     <TextBlock Text="Reset" VerticalAlignment="Center"/>
                                 </StackPanel>
                             </Button>

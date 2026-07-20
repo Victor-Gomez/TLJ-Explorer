@@ -47,31 +47,48 @@ public static class SceneComposer
                 siblings[child.Name] = child;
         }
 
-        // Find and decode the first usable backdrop. It defines the canvas dimensions -- everything else
-        // is drawn relative to a top-left origin at (0,0).
-        DecodedImage? backdrop = null;
+        // Backdrop discovery: XRC coordinates and each sprite's hotspot are authored against the ORIGINAL
+        // asset resolution. When Stark HD mods replace the backdrop with an upscaled PNG (e.g. 3556x2028
+        // vs the shipped 1920x1095), the sprite positions no longer match the canvas dimensions. So we
+        // decode the original AND preferred variants of the backdrop, use the mod PNG for the canvas, and
+        // remember the scale factor to apply to sprite positions and (if needed) sprite pixels below.
+        DecodedSprite? backdrop = null;         // the pixels we actually paint (mod-preferred if present)
+        DecodedSprite? backdropOriginal = null; // authored dims, used to compute the scale factor
         int backdropIndex = -1;
         for (int i = 0; i < layers.Count; i++)
         {
             if (layers[i].Kind != XrcSceneLayerKind.Backdrop)
                 continue;
 
-            backdrop = TryDecodeStillImage(layers[i].FileName, siblings, vfs, settings);
-            if (backdrop is not null)
+            Log.Info($"SceneComposer trying backdrop layer[{i}]=\"{layers[i].FileName}\" sibling={(siblings.ContainsKey(layers[i].FileName) ? "yes" : "no")}");
+            backdropOriginal = TryDecodeStillImage(layers[i].FileName, siblings, vfs, settings, VirtualFileSystem.OpenVariant.Original);
+            backdrop = TryDecodeStillImage(layers[i].FileName, siblings, vfs, settings, VirtualFileSystem.OpenVariant.Preferred);
+            Log.Info($"SceneComposer backdrop layer[{i}] original={(backdropOriginal is null ? "null" : $"{backdropOriginal.Value.Image.Width}x{backdropOriginal.Value.Image.Height}")} preferred={(backdrop is null ? "null" : $"{backdrop.Value.Image.Width}x{backdrop.Value.Image.Height} premul={backdrop.Value.IsPremultiplied}")}");
+            if (backdrop is not null && backdropOriginal is not null)
             {
                 backdropIndex = i;
                 break;
             }
         }
 
-        if (backdrop is null)
+        if (backdrop is null || backdropOriginal is null)
+        {
+            Log.Warn($"SceneComposer: no usable backdrop across {layers.Count} layer(s); folder=\"{sceneFolder.Name}\"");
             return null;
+        }
 
-        int width = backdrop.Width;
-        int height = backdrop.Height;
+        // Uniform scale factor -- Stark mods upscale isotropically, so one number suffices. If the mod
+        // dims exactly match the original, this is 1.0 and every downstream scale step is a no-op.
+        DecodedImage backdropPixels = backdrop.Value.Image;
+        DecodedImage backdropOriginalPixels = backdropOriginal.Value.Image;
+        double scale = (double)backdropPixels.Width / backdropOriginalPixels.Width;
+        Log.Info($"SceneComposer scale={scale:0.###} (mod {backdropPixels.Width}x{backdropPixels.Height} / original {backdropOriginalPixels.Width}x{backdropOriginalPixels.Height})");
+
+        int width = backdropPixels.Width;
+        int height = backdropPixels.Height;
         byte[] canvas = new byte[width * height * 4];
 
-        BlitOpaque(backdrop, canvas, width, height, 0, 0);
+        BlitOpaque(backdropPixels, canvas, width, height, 0, 0);
 
         var overlays = new List<SceneAnimatedOverlay>();
 
@@ -86,13 +103,34 @@ public static class SceneComposer
 
             if (ext is ".xmg" or ".tm")
             {
-                DecodedImage? still = TryDecodeStillImage(layer.FileName, siblings, vfs, settings);
-                if (still is not null)
-                    BlitAlpha(still, canvas, width, height, layer.X, layer.Y);
+                DecodedSprite? authored = TryDecodeStillImage(layer.FileName, siblings, vfs, settings, VirtualFileSystem.OpenVariant.Original);
+                DecodedSprite? preferred = TryDecodeStillImage(layer.FileName, siblings, vfs, settings, VirtualFileSystem.OpenVariant.Preferred);
+                DecodedSprite? sprite = preferred ?? authored;
+                if (sprite is null)
+                    continue;
+
+                DecodedImage still = sprite.Value.Image;
+                int targetW = authored is not null ? Math.Max(1, (int)Math.Round(authored.Value.Image.Width * scale)) : still.Width;
+                int targetH = authored is not null ? Math.Max(1, (int)Math.Round(authored.Value.Image.Height * scale)) : still.Height;
+
+                // Ensure premultiplied BEFORE any resample so bilinear averaging can't drag dark garbage
+                // RGB stored in low-alpha edge pixels into the sprite. PNG mod overrides come from Skia
+                // already in premul (many exporters bake premul into their PNGs despite the spec), so
+                // premultiplying them again would double up and produce the visible black halo. XMG/TM
+                // originals are genuinely straight-alpha and need explicit premultiply.
+                DecodedImage premul = sprite.Value.IsPremultiplied ? still : Premultiply(still);
+                if (premul.Width != targetW || premul.Height != targetH)
+                    premul = ResizeBilinearPremul(premul, targetW, targetH);
+
+                int scaledX = (int)Math.Round(layer.X * scale);
+                int scaledY = (int)Math.Round(layer.Y * scale);
+
+                Log.Info($"SceneComposer blit layer[{i}] name=\"{layer.Name}\" file=\"{layer.FileName}\" pos=({scaledX},{scaledY}) size={premul.Width}x{premul.Height} (authored={(authored is null ? "?" : $"{authored.Value.Image.Width}x{authored.Value.Image.Height}")}, srcPremul={sprite.Value.IsPremultiplied}, scale={scale:0.##})");
+                BlitAlpha(premul, canvas, width, height, scaledX, scaledY);
             }
             else if (ext is ".bbb" or ".sss")
             {
-                SceneAnimatedOverlay? overlay = TryExtractOverlay(layer, siblings, vfs, settings, tempFiles);
+                SceneAnimatedOverlay? overlay = TryExtractOverlay(layer, siblings, vfs, settings, tempFiles, scale);
                 if (overlay is not null)
                     overlays.Add(overlay);
             }
@@ -106,33 +144,70 @@ public static class SceneComposer
     /// Looks up <paramref name="fileName"/> as a sibling in the scene folder and decodes it via the
     /// same decoders <see cref="Services.ResourceLoader"/> uses. Multi-image TMs return their first entry.
     /// </summary>
-    private static DecodedImage? TryDecodeStillImage(
+    /// <summary>Decoded image plus a flag indicating whether its RGB has already been premultiplied by
+    /// alpha. PNG mod overrides come out of Skia already in that state (many art-tool exporters bake
+    /// premul into their PNGs despite the PNG spec calling for straight-alpha), while XMG/TM originals
+    /// are genuinely straight-alpha. The scene compositor needs to know which so it doesn't double-premul.
+    /// </summary>
+    private readonly record struct DecodedSprite(DecodedImage Image, bool IsPremultiplied);
+
+    private static DecodedSprite? TryDecodeStillImage(
         string fileName,
         Dictionary<string, FsNode> siblings,
         VirtualFileSystem vfs,
-        AppSettings settings)
+        AppSettings settings,
+        VirtualFileSystem.OpenVariant variant = VirtualFileSystem.OpenVariant.Preferred)
     {
         if (!siblings.TryGetValue(fileName, out FsNode? node))
+        {
+            Log.Warn($"TryDecodeStillImage: \"{fileName}\" not in siblings map");
             return null;
+        }
 
         try
         {
-            using Stream stream = vfs.OpenFile(node);
+            using Stream stream = vfs.OpenFile(node, variant);
             string ext = Path.GetExtension(fileName).ToLowerInvariant();
 
-            return ext switch
+            switch (ext)
             {
-                ".xmg" => XmgDecoder.Decode(stream),
-                ".tm" => TmDecoder.Decode(stream, settings.ShowMipMaps) is { Count: > 0 } tm
-                    ? tm[0].Image
-                    : null,
-                _ => null,
-            };
+                case ".xmg":
+                    // Stark mods replace .xmg archive entries with PNG files (see ResourceLoader.LoadXmg),
+                    // so we can't call XmgDecoder unconditionally -- the bytes may actually be PNG. Sniff
+                    // the signature and dispatch to the right decoder, matching the file-viewer path.
+                    bool isPng = SniffIsPng(stream);
+                    DecodedImage? xmg = PngToDecodedImage.DecodeXmgOrPng(stream, XmgDecoder.Decode);
+                    Log.Info($"TryDecodeStillImage: \"{fileName}\" {(isPng ? "png" : "xmg")} -> {(xmg is null ? "null" : $"{xmg.Width}x{xmg.Height}")}");
+                    return xmg is null ? null : new DecodedSprite(xmg, IsPremultiplied: isPng);
+                case ".tm":
+                    var tm = TmDecoder.Decode(stream, settings.ShowMipMaps);
+                    Log.Info($"TryDecodeStillImage: \"{fileName}\" TmDecoder -> {tm?.Count ?? 0} entries");
+                    return tm is { Count: > 0 }
+                        ? new DecodedSprite(tm[0].Image, IsPremultiplied: false)
+                        : null;
+                default:
+                    Log.Warn($"TryDecodeStillImage: \"{fileName}\" unsupported extension {ext}");
+                    return null;
+            }
         }
-        catch
+        catch (Exception ex)
         {
+            Log.Exception($"TryDecodeStillImage \"{fileName}\"", ex);
             return null;
         }
+    }
+
+    /// <summary>Peeks the first 8 bytes to detect a PNG signature, rewinding the stream to the origin so
+    /// the caller can decode as usual. Requires a seekable stream.</summary>
+    private static bool SniffIsPng(Stream stream)
+    {
+        if (!stream.CanSeek)
+            return false;
+        long origin = stream.Position;
+        Span<byte> peek = stackalloc byte[8];
+        int read = stream.Read(peek);
+        stream.Position = origin;
+        return read == peek.Length && PngToDecodedImage.LooksLikePng(peek);
     }
 
     /// <summary>
@@ -145,7 +220,8 @@ public static class SceneComposer
         Dictionary<string, FsNode> siblings,
         VirtualFileSystem vfs,
         AppSettings settings,
-        TempFileTracker tempFiles)
+        TempFileTracker tempFiles,
+        double scale)
     {
         if (!siblings.TryGetValue(layer.FileName, out FsNode? node))
             return null;
@@ -170,12 +246,85 @@ public static class SceneComposer
             foreach (string path in result.FramePaths)
                 frames.Add(new Bitmap(path));
 
-            return new SceneAnimatedOverlay(layer.Name, layer.X, layer.Y, frames, result.Fps);
+            // Animated overlays live as separate Image controls on the scene Canvas. Position AND size
+            // scale with the backdrop -- Avalonia's Image stretches to its Width/Height allocation, so
+            // we hand back scaled dimensions and the UI layer applies them to the Image control.
+            int overlayX = (int)Math.Round(layer.X * scale);
+            int overlayY = (int)Math.Round(layer.Y * scale);
+            int overlayW = Math.Max(1, (int)Math.Round(frames[0].PixelSize.Width * scale));
+            int overlayH = Math.Max(1, (int)Math.Round(frames[0].PixelSize.Height * scale));
+            return new SceneAnimatedOverlay(layer.Name, overlayX, overlayY, overlayW, overlayH, frames, result.Fps);
         }
         catch
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Bilinear rescale of a BGRA8 <see cref="DecodedImage"/> whose alpha is already premultiplied. The
+    /// premultiply requirement is what keeps antialiased sprite edges clean during upscaling: with
+    /// straight-alpha input, bilinear averaging drags the "garbage" RGB stored in low-alpha edge pixels
+    /// (usually black, from the exporter's matte) back into the visible sprite as a grey halo. Once RGB
+    /// has been folded into alpha, low-alpha samples contribute proportionally small RGB, so the
+    /// filtered edges stay clean.
+    /// </summary>
+    private static DecodedImage ResizeBilinearPremul(DecodedImage src, int targetW, int targetH)
+    {
+        if (src.Width == targetW && src.Height == targetH)
+            return src;
+
+        byte[] sp = src.Pixels;
+        byte[] dst = new byte[targetW * targetH * 4];
+        int srcW = src.Width;
+        int srcH = src.Height;
+        int srcStride = srcW * 4;
+
+        // Map destination-center-of-pixel back to source-center-of-pixel coordinates so the outermost
+        // dst pixels sample at the outermost src pixels (rather than half-a-src-pixel outside the image).
+        double sx = (double)srcW / targetW;
+        double sy = (double)srcH / targetH;
+
+        for (int y = 0; y < targetH; y++)
+        {
+            double srcYf = (y + 0.5) * sy - 0.5;
+            int y0 = (int)Math.Floor(srcYf);
+            int y1 = y0 + 1;
+            double fy = srcYf - y0;
+            if (y0 < 0) { y0 = 0; fy = 0; }
+            if (y1 >= srcH) { y1 = srcH - 1; fy = 1; }
+            int rowY0 = y0 * srcStride;
+            int rowY1 = y1 * srcStride;
+            int dstRow = y * targetW * 4;
+
+            for (int x = 0; x < targetW; x++)
+            {
+                double srcXf = (x + 0.5) * sx - 0.5;
+                int x0 = (int)Math.Floor(srcXf);
+                int x1 = x0 + 1;
+                double fx = srcXf - x0;
+                if (x0 < 0) { x0 = 0; fx = 0; }
+                if (x1 >= srcW) { x1 = srcW - 1; fx = 1; }
+
+                int i00 = rowY0 + x0 * 4;
+                int i10 = rowY0 + x1 * 4;
+                int i01 = rowY1 + x0 * 4;
+                int i11 = rowY1 + x1 * 4;
+
+                double w00 = (1 - fx) * (1 - fy);
+                double w10 = fx * (1 - fy);
+                double w01 = (1 - fx) * fy;
+                double w11 = fx * fy;
+
+                int di = dstRow + x * 4;
+                dst[di + 0] = (byte)Math.Clamp((int)(sp[i00 + 0] * w00 + sp[i10 + 0] * w10 + sp[i01 + 0] * w01 + sp[i11 + 0] * w11 + 0.5), 0, 255);
+                dst[di + 1] = (byte)Math.Clamp((int)(sp[i00 + 1] * w00 + sp[i10 + 1] * w10 + sp[i01 + 1] * w01 + sp[i11 + 1] * w11 + 0.5), 0, 255);
+                dst[di + 2] = (byte)Math.Clamp((int)(sp[i00 + 2] * w00 + sp[i10 + 2] * w10 + sp[i01 + 2] * w01 + sp[i11 + 2] * w11 + 0.5), 0, 255);
+                dst[di + 3] = (byte)Math.Clamp((int)(sp[i00 + 3] * w00 + sp[i10 + 3] * w10 + sp[i01 + 3] * w01 + sp[i11 + 3] * w11 + 0.5), 0, 255);
+            }
+        }
+
+        return new DecodedImage(targetW, targetH, dst);
     }
 
     /// <summary>Blits <paramref name="src"/> onto <paramref name="dst"/> at <c>(dx,dy)</c>, ignoring alpha (opaque backdrop copy).</summary>
@@ -199,8 +348,47 @@ public static class SceneComposer
     }
 
     /// <summary>
-    /// Blits <paramref name="src"/> onto <paramref name="dst"/> at <c>(dx,dy)</c> with straight-alpha
-    /// (src over dst) compositing. Pixels are BGRA8; alpha == 0 is skipped.
+    /// Returns a copy of <paramref name="src"/> with its RGB channels premultiplied by alpha. Our
+    /// <see cref="DecodedImage"/> is documented as straight-alpha BGRA (see XmgDecoder, TmDecoder), and
+    /// PNG mod overrides come out of Skia the same way. Straight-alpha "over" compositing gives visible
+    /// dark fringes on antialiased sprite edges because PNG exporters commonly leave dark garbage RGB
+    /// in transparent-adjacent pixels -- multiplying those raw dark values into the destination adds a
+    /// grey halo. Premultiplying up front folds the alpha into the RGB before the blit so the
+    /// contribution from low-alpha pixels is proportionally small regardless of what their RGB was.
+    /// </summary>
+    private static DecodedImage Premultiply(DecodedImage src)
+    {
+        byte[] sp = src.Pixels;
+        byte[] dst = new byte[sp.Length];
+        for (int i = 0; i < sp.Length; i += 4)
+        {
+            byte a = sp[i + 3];
+            if (a == 0)
+            {
+                // dst is already zeroed.
+                continue;
+            }
+            if (a == 255)
+            {
+                dst[i + 0] = sp[i + 0];
+                dst[i + 1] = sp[i + 1];
+                dst[i + 2] = sp[i + 2];
+                dst[i + 3] = 255;
+                continue;
+            }
+            dst[i + 0] = (byte)((sp[i + 0] * a) / 255);
+            dst[i + 1] = (byte)((sp[i + 1] * a) / 255);
+            dst[i + 2] = (byte)((sp[i + 2] * a) / 255);
+            dst[i + 3] = a;
+        }
+        return new DecodedImage(src.Width, src.Height, dst);
+    }
+
+    /// <summary>
+    /// Composites a PREMULTIPLIED-alpha <paramref name="src"/> over <paramref name="dst"/> at
+    /// <c>(dx,dy)</c> using premultiplied "over": <c>result.rgb = src.rgb + dst.rgb * (1 - src.a)</c>.
+    /// Callers are responsible for premultiplying via <see cref="Premultiply"/> beforehand. Pixels are
+    /// BGRA8; alpha == 0 is skipped.
     /// </summary>
     private static void BlitAlpha(DecodedImage src, byte[] dst, int dstWidth, int dstHeight, int dx, int dy)
     {
@@ -234,11 +422,18 @@ public static class SceneComposer
                     continue;
                 }
 
+                // Premultiplied "over": src already carries rgb*a, so we add it directly and attenuate
+                // the destination by (1 - a). This is the fix for the dark-fringe artefact -- the old
+                // straight-alpha formula multiplied src.rgb by sa a second time, so any dark garbage
+                // sitting in the source's low-alpha pixels bled into the composite as a grey halo.
                 int inv = 255 - sa;
-                dst[dstRow + 0] = (byte)(((sp[srcRow + 0] * sa) + (dst[dstRow + 0] * inv)) / 255);
-                dst[dstRow + 1] = (byte)(((sp[srcRow + 1] * sa) + (dst[dstRow + 1] * inv)) / 255);
-                dst[dstRow + 2] = (byte)(((sp[srcRow + 2] * sa) + (dst[dstRow + 2] * inv)) / 255);
-                dst[dstRow + 3] = (byte)Math.Min(255, dst[dstRow + 3] + sa);
+                dst[dstRow + 0] = (byte)(sp[srcRow + 0] + (dst[dstRow + 0] * inv + 127) / 255);
+                dst[dstRow + 1] = (byte)(sp[srcRow + 1] + (dst[dstRow + 1] * inv + 127) / 255);
+                dst[dstRow + 2] = (byte)(sp[srcRow + 2] + (dst[dstRow + 2] * inv + 127) / 255);
+                // Alpha: sa + da*(1 - sa/255). Backdrop is fully opaque throughout, so this collapses
+                // to 255 in practice; kept general to be safe if a future caller ever blits onto a
+                // partially transparent canvas.
+                dst[dstRow + 3] = (byte)(sa + (dst[dstRow + 3] * inv + 127) / 255);
             }
         }
     }
