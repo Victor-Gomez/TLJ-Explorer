@@ -49,6 +49,20 @@ public class ModPngForXmgOverrideTests
         Assert.Same(archived, target);
     }
 
+    [Theory]
+    [InlineData("010f01.bbb", "010f01.bik")]
+    [InlineData("intro.sss", "intro.smk")]
+    [InlineData("music.ovs", "music.ogg")]
+    public void ResolveModTarget_ContainerPassthroughSwap_MatchesArchiveEntry(string archiveName, string modName)
+    {
+        var archived = new FsNode { NodeType = FsNodeType.File | FsNodeType.InArchive, Name = archiveName };
+        var byName = new Dictionary<string, FsNode>(StringComparer.OrdinalIgnoreCase) { [archived.Name] = archived };
+
+        MethodInfo m = typeof(VirtualFileSystem).GetMethod("ResolveModTarget", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var target = (FsNode?)m.Invoke(null, [byName, modName]);
+        Assert.Same(archived, target);
+    }
+
     [Fact]
     public void ResolveModTarget_UnrelatedExtensionSwap_ReturnsNull()
     {

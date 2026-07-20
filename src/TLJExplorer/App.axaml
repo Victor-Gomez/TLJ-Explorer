@@ -1,0 +1,99 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:services="clr-namespace:TLJExplorer.Services"
+             x:Class="TLJExplorer.App"
+             RequestedThemeVariant="Dark">
+    <Application.Styles>
+        <FluentTheme>
+            <!--
+                Without an explicit Accent, Avalonia's built-in Fluent controls (buttons, checkboxes,
+                selection highlights, etc, anything using SystemAccentColor/SystemControlHighlightAccentBrush)
+                fall back to the platform's OS accent color, while this app's own accent-tinted resources
+                below were a separately hardcoded hex. That's a real mismatch on any machine with a
+                non-default Windows accent color. Pinning Accent here to the same blue keeps both in sync
+                through one source of truth (see docs.avaloniaui.net/docs/styling/themes#fluent).
+            -->
+            <FluentTheme.Palettes>
+                <ColorPaletteResources x:Key="Dark" Accent="#FF60CDFF"/>
+                <ColorPaletteResources x:Key="Light" Accent="#FF005FB8"/>
+            </FluentTheme.Palettes>
+        </FluentTheme>
+    </Application.Styles>
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceInclude Source="avares://TLJExplorer/Assets/Icons/VectorIcons.axaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <services:ResourceKeyToImageConverter x:Key="ResourceKeyToImageConverter"/>
+
+            <!--
+                Avalonia's FluentTheme has no equivalent of WPF Fluent's semantic WinUI2 text/card/fill
+                tokens, so the ones this app's XAML references via {DynamicResource ...} are redefined
+                here (same keys, approximate WinUI/Fluent dark+light values) purely so that XAML keeps
+                working unchanged.
+            -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#FFFFFFFF"/>
+                    <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#C5FFFFFF"/>
+                    <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#14FFFFFF"/>
+                    <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="#14FFFFFF"/>
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="#FF202020"/>
+                    <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#19FFFFFF"/>
+                    <SolidColorBrush x:Key="SubtleFillColorSecondaryBrush" Color="#12FFFFFF"/>
+                    <SolidColorBrush x:Key="SubtleFillColorTertiaryBrush" Color="#1FFFFFFF"/>
+                    <!-- Derived from the FluentTheme.Palettes Accent above (SystemAccentColor is the real
+                         resource key FluentTheme defines from it) rather than a second hardcoded hex, so
+                         the two can't drift out of sync. -->
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="{DynamicResource SystemAccentColor}"/>
+
+                    <!--
+                        Avalonia FluentTheme's own built-in TextBox/ComboBox templates don't use the WinUI2
+                        card tokens above at all, they use their own TextControl*/ComboBox* keys, which
+                        default to SystemControlForegroundBaseMediumBrush (60% opacity white/black) for the
+                        border and SystemControlBackgroundAltMediumLowBrush (40% opacity black/white) for the
+                        fill. Against this app's near-black background that renders as a stark bright border
+                        on an invisible fill, much harsher than WPF Fluent's softer card look. Aliasing
+                        them onto the same tokens above keeps built-in input controls visually consistent
+                        with this app's own card-styled elements. Same alias pattern Avalonia's own
+                        FluentControlResources.xaml uses internally (StaticResource x:Key/ResourceKey).
+                    -->
+                    <StaticResource x:Key="TextControlBackground" ResourceKey="CardBackgroundFillColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBorderBrush" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush"/>
+                    <StaticResource x:Key="TextControlBorderBrushPointerOver" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBackgroundFocused" ResourceKey="CardBackgroundFillColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBorderBrushFocused" ResourceKey="AccentFillColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBackground" ResourceKey="CardBackgroundFillColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBorderBrush" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush"/>
+                    <StaticResource x:Key="ComboBoxBorderBrushPointerOver" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBackgroundBorderBrushFocused" ResourceKey="AccentFillColorDefaultBrush"/>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#E4000000"/>
+                    <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#9E000000"/>
+                    <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#B3FFFFFF"/>
+                    <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="#0F000000"/>
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="#FFF3F3F3"/>
+                    <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#15000000"/>
+                    <SolidColorBrush x:Key="SubtleFillColorSecondaryBrush" Color="#09000000"/>
+                    <SolidColorBrush x:Key="SubtleFillColorTertiaryBrush" Color="#0F000000"/>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="{DynamicResource SystemAccentColor}"/>
+
+                    <StaticResource x:Key="TextControlBackground" ResourceKey="CardBackgroundFillColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBorderBrush" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush"/>
+                    <StaticResource x:Key="TextControlBorderBrushPointerOver" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBackgroundFocused" ResourceKey="CardBackgroundFillColorDefaultBrush"/>
+                    <StaticResource x:Key="TextControlBorderBrushFocused" ResourceKey="AccentFillColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBackground" ResourceKey="CardBackgroundFillColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBorderBrush" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBackgroundPointerOver" ResourceKey="SubtleFillColorSecondaryBrush"/>
+                    <StaticResource x:Key="ComboBoxBorderBrushPointerOver" ResourceKey="ControlStrokeColorDefaultBrush"/>
+                    <StaticResource x:Key="ComboBoxBackgroundBorderBrushFocused" ResourceKey="AccentFillColorDefaultBrush"/>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

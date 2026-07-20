@@ -1,15 +1,18 @@
-using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
-using System.Windows;
-using System.Windows.Controls.Primitives;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Threading;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using TLJExplorer.Services;
 using TLJExplorer.ViewModels;
+using TLJExplorer.Views;
 using TLJExplorer.Core.FileSystem;
 using TLJExplorer.Core.Formats;
 using TLJExplorer.Core.Settings;
@@ -17,17 +20,86 @@ using TLJExplorer.Core.Settings;
 namespace TLJExplorer;
 
 /// <summary>
-/// Interaction logic for MainWindow.xaml. Owns the loaded <see cref="VirtualFileSystem"/>, the currently
+/// Interaction logic for MainWindow.axaml. Owns the loaded <see cref="VirtualFileSystem"/>, the currently
 /// selected resource, and the sound player. Deliberately a thin code-behind rather than MVVM.
 /// </summary>
 public partial class MainWindow : Window
 {
     private readonly AppSettings _settings;
     private readonly TempFileTracker _tempFiles;
-    private readonly MediaPlayer _mediaPlayer = new();
+    // Lazily created on first actual use (opening a sound/video resource) rather than field initializers:
+    // constructing a LibVlcMediaPlayer spins up the native libvlc engine (plugin discovery etc.), which
+    // takes a couple hundred ms -- eating that eagerly here would delay showing the main window.
+    private LibVlcMediaPlayer? _mediaPlayerBacking;
+    private LibVlcMediaPlayer _mediaPlayer => _mediaPlayerBacking ??= CreateSoundPlayer();
+
+    private LibVlcMediaPlayer? _videoPlayerBacking;
+    private LibVlcMediaPlayer _videoPlayer => _videoPlayerBacking ??= CreateVideoPlayer();
+
+    private LibVlcMediaPlayer CreateSoundPlayer()
+    {
+        var player = new LibVlcMediaPlayer();
+        player.MediaOpened += MediaPlayer_MediaOpened;
+        player.MediaEnded += MediaPlayer_MediaEnded_SoundLoop;
+        return player;
+    }
+
+    private LibVlcMediaPlayer CreateVideoPlayer()
+    {
+        var player = new LibVlcMediaPlayer();
+        player.MediaEnded += VideoPlayer_MediaEnded;
+        player.MediaOpened += VideoPlayer_MediaOpened;
+
+        // TimeChanged fires on LibVLC's callback thread; marshal to the UI thread and use it to preempt
+        // the natural end of playback. If we let the video reach End, LibVLC releases the video output
+        // and the VideoView paints black -- rewinding-and-pausing just before End keeps the surface
+        // alive and renders frame 0 for the user to see.
+        player.NativePlayer.TimeChanged += (_, args) =>
+        {
+            long timeMs = args.Time;
+            Dispatcher.UIThread.Post(() => HandleVideoTimeChanged(timeMs));
+        };
+
+        // Bind to the VideoView only once its NativeControlHost has been attached to the visual tree --
+        // the VideoPanel starts hidden, so during warm-up the child native window doesn't exist yet and
+        // MediaPlayer.Hwnd would stay IntPtr.Zero. Play() then falls back to spawning a separate top-level
+        // "VLC (Direct3D11 output)" window instead of rendering into our embedded surface.
+        if (VideoPlayer.GetVisualRoot() is not null)
+            VideoPlayer.MediaPlayer = player.NativePlayer;
+        else
+            VideoPlayer.AttachedToVisualTree += AttachOnce;
+
+        void AttachOnce(object? sender, VisualTreeAttachmentEventArgs e)
+        {
+            VideoPlayer.AttachedToVisualTree -= AttachOnce;
+            VideoPlayer.MediaPlayer = player.NativePlayer;
+        }
+
+        return player;
+    }
+
     private readonly DispatcherTimer _positionTimer;
+    private readonly DispatcherTimer _videoPositionTimer;
+    private bool _videoSliderDragging;
+    private bool _videoDurationKnown;
 
     private readonly DispatcherTimer _searchDebounceTimer;
+
+    // Avalonia has no Window.IsInitialized; several ValueChanged handlers fire while InitializeComponent
+    // is still wiring up named fields (sliders raise ValueChanged as soon as their XAML-declared Value is
+    // applied). This flips true at the end of the constructor, same guard purpose as WPF's IsInitialized.
+    private bool _initialized;
+
+    // Avalonia doesn't generate x:Name fields for objects assigned via a property (LayoutTransform, Clip)
+    // rather than being a visual-tree child -- by design, see AvaloniaUI/Avalonia#20269. These are built
+    // here instead and wired onto their host control's property in the constructor.
+    private readonly ScaleTransform _imageScale = new();
+    private readonly ScaleTransform _imageCompareStageScale = new();
+    private readonly ScaleTransform _imageCompareSideOriginalScale = new();
+    private readonly ScaleTransform _imageCompareSideModScale = new();
+    private readonly ScaleTransform _sceneScale = new();
+    private readonly RectangleGeometry _imageCompareOriginalClip = new();
+    private readonly RectangleGeometry _imageCompareModClip = new();
 
     private CancellationTokenSource? _batchExportCts;
     private ModFolderWatcher? _modFolderWatcher;
@@ -72,29 +144,43 @@ public partial class MainWindow : Window
     private DispatcherTimer? _sceneFrameTimer;
 
     /// <summary>Per-overlay animation state: the Image control on the canvas, its frame sequence, and the mutable index into it.</summary>
-    private sealed class SceneOverlayInstance(
-        System.Windows.Controls.Image imageControl,
-        IReadOnlyList<System.Windows.Media.Imaging.BitmapSource> frames)
+    private sealed class SceneOverlayInstance(Image imageControl, IReadOnlyList<Bitmap> frames)
     {
-        public System.Windows.Controls.Image ImageControl { get; } = imageControl;
-        public IReadOnlyList<System.Windows.Media.Imaging.BitmapSource> Frames { get; } = frames;
+        public Image ImageControl { get; } = imageControl;
+        public IReadOnlyList<Bitmap> Frames { get; } = frames;
         public int FrameIndex { get; set; }
     }
 
     private readonly List<SceneOverlayInstance> _sceneOverlays = [];
 
     /// <summary>A single entry in the Model/Skin/Animation dropdowns. <see cref="Node"/> is <see langword="null"/> for the synthetic "(none)" entry offered by the Skin/Animation combos.</summary>
-    private sealed record ModelPickItem(string DisplayName, FsNode? Node);
+    private sealed record ModelPickItem(string DisplayName, FsNode? Node)
+    {
+        public override string ToString() => DisplayName;
+    }
 
     public MainWindow()
     {
         InitializeComponent();
 
         _settings = AppSettings.Load();
-        _tempFiles = ((App)Application.Current).TempFiles;
+        _tempFiles = ((App)Application.Current!).TempFiles;
+
+        // See the _imageScale/etc. field comments: these aren't x:Name-addressable from XAML, so wire
+        // them onto their host controls' LayoutTransform/Clip properties here instead.
+        PreviewImageTransformHost.LayoutTransform = _imageScale;
+        ImageCompareStageTransformHost.LayoutTransform = _imageCompareStageScale;
+        ImageCompareSideOriginalTransformHost.LayoutTransform = _imageCompareSideOriginalScale;
+        ImageCompareSideModTransformHost.LayoutTransform = _imageCompareSideModScale;
+        SceneTransformHost.LayoutTransform = _sceneScale;
+        ImageCompareOriginalImage.Clip = _imageCompareOriginalClip;
+        ImageCompareModImage.Clip = _imageCompareModClip;
 
         _positionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _positionTimer.Tick += PositionTimer_Tick;
+
+        _videoPositionTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _videoPositionTimer.Tick += VideoPositionTimer_Tick;
 
         _searchDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
         _searchDebounceTimer.Tick += (_, _) =>
@@ -107,38 +193,75 @@ public partial class MainWindow : Window
         _modelPlaybackTimer.Tick += ModelPlaybackTimer_Tick;
         _modelPlaybackTimer.Start();
 
-        _mediaPlayer.MediaOpened += MediaPlayer_MediaOpened;
-        _mediaPlayer.MediaEnded += MediaPlayer_MediaEnded_SoundLoop;
-
         TypeFilterCombo.ItemsSource = ResourceTypeFilter.Categories;
         TypeFilterCombo.SelectedIndex = 0;
 
         InitializeOptionsMenu();
 
-        PreviewKeyDown += MainWindow_PreviewKeyDown;
+        // Tunnel routing so shortcuts fire even when a child control has keyboard focus, mirroring WPF's
+        // PreviewKeyDown. Wired via AddHandler (not a XAML attribute) since Avalonia's XAML event syntax
+        // always attaches at the default (bubble) routing strategy.
+        AddHandler(KeyDownEvent, MainWindow_PreviewKeyDown, RoutingStrategies.Tunnel);
+
         Loaded += MainWindow_Loaded;
         Closed += (_, _) =>
         {
-            _mediaPlayer.Close();
-            StopVideo();
+            // Guard on the backing field, not the lazy property: if the user never played a sound/video
+            // this session, don't force the (expensive) native player to spin up just to tear it down.
+            _mediaPlayerBacking?.Dispose();
+            if (_videoPlayerBacking is not null)
+            {
+                StopVideo();
+                _videoPlayerBacking.Dispose();
+            }
             ModelViewerHost.Dispose();
             _modFolderWatcher?.Dispose();
         };
+
+        // Wheel handlers need Tunnel routing to intercept before the ScrollViewer's own native scroll
+        // response (mirrors WPF's PreviewMouseWheel usage for the same purpose).
+        ImageScrollViewer.AddHandler(PointerWheelChangedEvent, ImageScrollViewer_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+        ImageCompareWipeScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+        ImageCompareSideOriginalScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+        ImageCompareSideModScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+        SceneScrollViewer.AddHandler(PointerWheelChangedEvent, SceneScrollViewer_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+        VideoScrollViewer.AddHandler(PointerWheelChangedEvent, VideoScrollViewer_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+
+        // Pan-drag handlers for the image and compare viewers (bubble routing is fine here -- there's no
+        // default ScrollViewer behavior to defeat, unlike wheel-zoom).
+        ImageScrollViewer.PointerPressed += ImageScrollViewer_PointerPressed;
+        ImageScrollViewer.PointerMoved += ImageScrollViewer_PointerMoved;
+        ImageScrollViewer.PointerReleased += ImageScrollViewer_PointerReleased;
+        ImageCompareWipeScroll.PointerPressed += ImageComparePanScroll_PointerPressed;
+        ImageCompareWipeScroll.PointerMoved += ImageComparePanScroll_PointerMoved;
+        ImageCompareWipeScroll.PointerReleased += ImageComparePanScroll_PointerReleased;
+        ImageCompareSideOriginalScroll.PointerPressed += ImageComparePanScroll_PointerPressed;
+        ImageCompareSideOriginalScroll.PointerMoved += ImageComparePanScroll_PointerMoved;
+        ImageCompareSideOriginalScroll.PointerReleased += ImageComparePanScroll_PointerReleased;
+        ImageCompareSideModScroll.PointerPressed += ImageComparePanScroll_PointerPressed;
+        ImageCompareSideModScroll.PointerMoved += ImageComparePanScroll_PointerMoved;
+        ImageCompareSideModScroll.PointerReleased += ImageComparePanScroll_PointerReleased;
+
+        SceneScrollViewer.PointerPressed += SceneScrollViewer_PointerPressed;
+        SceneScrollViewer.PointerMoved += SceneScrollViewer_PointerMoved;
+        SceneScrollViewer.PointerReleased += SceneScrollViewer_PointerReleased;
+
+        _initialized = true;
     }
 
     /// <summary>
-    /// App-wide keyboard shortcuts. Deliberately Preview-level so they fire even when the tree has
-    /// keyboard focus, but we bail out when the user is typing in the search box — otherwise "F" would
+    /// App-wide keyboard shortcuts. Deliberately tunnel-routed so they fire even when the tree has
+    /// keyboard focus, but we bail out when the user is typing in the search box -- otherwise "F" would
     /// silently steal the letter, and Space would trigger playback instead of inserting a space.
     /// </summary>
-    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void MainWindow_PreviewKeyDown(object? sender, KeyEventArgs e)
     {
-        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
-        bool typingInSearchBox = SearchBox.IsKeyboardFocused;
+        bool ctrl = (e.KeyModifiers & KeyModifiers.Control) == KeyModifiers.Control;
+        bool typingInSearchBox = SearchBox.IsFocused;
 
         // Escape dismisses the in-app settings overlay when it's open. Handled before other
         // shortcuts so it always wins while settings are showing.
-        if (e.Key == Key.Escape && SettingsOverlay.Visibility == Visibility.Visible)
+        if (e.Key == Key.Escape && SettingsOverlay.IsVisible)
         {
             SettingsOverlay.Hide();
             e.Handled = true;
@@ -174,28 +297,28 @@ public partial class MainWindow : Window
         else if (!typingInSearchBox && e.Key == Key.Space)
         {
             // Context-aware: whichever panel is visible gets the space bar.
-            if (ModelPanel.Visibility == Visibility.Visible && ModelViewerHost.HasAnimation)
+            if (ModelPanel.IsVisible && ModelViewerHost.HasAnimation)
             {
                 if (ModelViewerHost.IsPlaying) ModelViewerHost.Pause();
                 else ModelViewerHost.Play();
                 e.Handled = true;
             }
-            else if (SoundPanel.Visibility == Visibility.Visible)
+            else if (SoundPanel.IsVisible)
             {
                 PlayPauseButton_Click(this, new RoutedEventArgs());
                 e.Handled = true;
             }
         }
-        else if (!typingInSearchBox && SoundPanel.Visibility == Visibility.Visible &&
+        else if (!typingInSearchBox && SoundPanel.IsVisible &&
                  (e.Key == Key.Left || e.Key == Key.Right))
         {
-            // Arrow-key seek for the sound player: ±5 seconds, clamped to the file's duration.
-            if (_mediaPlayer.NaturalDuration.HasTimeSpan)
+            // Arrow-key seek for the sound player: +-5 seconds, clamped to the file's duration.
+            if (_mediaPlayer.HasDurationTimeSpan)
             {
                 TimeSpan delta = TimeSpan.FromSeconds(e.Key == Key.Right ? 5 : -5);
                 TimeSpan target = _mediaPlayer.Position + delta;
                 if (target < TimeSpan.Zero) target = TimeSpan.Zero;
-                if (target > _mediaPlayer.NaturalDuration.TimeSpan) target = _mediaPlayer.NaturalDuration.TimeSpan;
+                if (_mediaPlayer.Duration is { } dur && target > dur) target = dur;
                 _mediaPlayer.Position = target;
                 SoundSlider.Value = target.TotalSeconds;
                 UpdateSoundTimeReadout();
@@ -204,16 +327,49 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    private async void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        // Fire-and-forget: now that the window itself has loaded, warm up the native engines the sound/
+        // video/3D panels need in the background so opening the first asset doesn't pay for it -- rather
+        // than deferring that cost all the way out to the user's first click.
+        WarmUpMediaAndRendererEngines();
+
         if (!string.IsNullOrWhiteSpace(_settings.BaseDir))
         {
             await InitVfsAsync(_settings.BaseDir);
         }
         else
         {
-            SetStatus("No TLJ install selected. Use File → Select TLJ Install Folder...");
+            SetStatus("No TLJ install selected. Use File -> Select TLJ Install Folder...");
         }
+    }
+
+    /// <summary>
+    /// Kicks off background construction of the LibVLC engine/players and the 3D viewer's OpenGL context
+    /// so they're ready by the time the user actually opens a sound/video/model resource, instead of
+    /// stalling that first click. Deliberately NOT run from the constructor -- doing it there would delay
+    /// showing the window itself, which is the whole point of making these lazy in the first place.
+    /// </summary>
+    private void WarmUpMediaAndRendererEngines()
+    {
+        _ = Task.Run(() =>
+        {
+            // The expensive part -- native libvlc plugin discovery/engine init -- has no UI-thread
+            // affinity requirement and is safe to do off-thread (LibVlcRuntime's Lazy<LibVLC> is
+            // thread-safe). Only materializing the LibVlcMediaPlayer wrappers (cheap once the engine is
+            // hot) needs to happen back on the UI thread, since attaching one to VideoView is UI-affine.
+            _ = LibVlcRuntime.Shared;
+            Dispatcher.UIThread.Post(() =>
+            {
+                _ = _mediaPlayer;
+                _ = _videoPlayer;
+            });
+        });
+
+        // The GL context is created via GLFW on whichever thread calls it, same as every other GL call
+        // in this app (OnFrame's per-frame render already runs on the UI thread) -- so warm it up there
+        // too, just at a low enough priority that the window's first paint isn't held up waiting for it.
+        ModelViewerHost.WarmUp();
     }
 
     // ---------------------------------------------------------------------
@@ -222,7 +378,7 @@ public partial class MainWindow : Window
 
     private async Task InitVfsAsync(string baseDir)
     {
-        ScanProgressBar.Visibility = Visibility.Visible;
+        ScanProgressBar.IsVisible = true;
         ScanProgressBar.IsIndeterminate = true;
         SetStatus($"Scanning \"{baseDir}\"...");
 
@@ -237,7 +393,7 @@ public partial class MainWindow : Window
 
             VirtualFileSystem vfs = await Task.Run(() => VirtualFileSystem.Init(
                 baseDir,
-                path => Dispatcher.BeginInvoke(() => SetStatus($"Scanning: {path}")),
+                path => Dispatcher.UIThread.Post(() => SetStatus($"Scanning: {path}")),
                 externalMods));
 
             _vfs = vfs;
@@ -247,7 +403,7 @@ public partial class MainWindow : Window
             // Tear down any previously-attached watcher (e.g. switching installs) and start a fresh one
             // over this VFS's xarc/ folders.
             _modFolderWatcher?.Dispose();
-            _modFolderWatcher = new ModFolderWatcher(vfs, Dispatcher, OnModChanged);
+            _modFolderWatcher = new ModFolderWatcher(vfs, Dispatcher.UIThread, OnModChanged);
 
             var rootVm = new FsNodeViewModel(vfs.Root, vfs) { IsExpanded = true };
             Tree.ItemsSource = new[] { rootVm };
@@ -255,16 +411,16 @@ public partial class MainWindow : Window
             SetStatus($"Loaded \"{baseDir}\".");
 
             // Restore last selection for this install, if any. Deferred so the tree has been rendered by
-            // WPF before we try to walk to and select a specific node.
+            // Avalonia before we try to walk to and select a specific node.
             if (_settings.LastSelectedPath.TryGetValue(baseDir, out string? savedPath) &&
                 !string.IsNullOrEmpty(savedPath))
             {
-                _ = Dispatcher.BeginInvoke(new Action(() =>
+                Dispatcher.UIThread.Post(() =>
                 {
                     FsNode? target = vfs.FindNode(vfs.Root, savedPath);
                     if (target is not null)
                         TryRestoreTreeSelection(rootVm, target);
-                }), System.Windows.Threading.DispatcherPriority.Background);
+                }, DispatcherPriority.Background);
             }
 
             // Build the whole-install Model/Skin/Animation catalog once, off the UI thread, so the
@@ -279,7 +435,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(
+            await Dialogs.ShowMessageBox(
                 this,
                 $"Could not load a TLJ install from:\n{baseDir}\n\n{ex.Message}",
                 "TLJ Explorer",
@@ -289,7 +445,7 @@ public partial class MainWindow : Window
         }
         finally
         {
-            ScanProgressBar.Visibility = Visibility.Collapsed;
+            ScanProgressBar.IsVisible = false;
             ScanProgressBar.IsIndeterminate = false;
         }
     }
@@ -303,10 +459,10 @@ public partial class MainWindow : Window
     // FsNode tree via FsNodeViewModel.BuildFiltered off the UI thread and swap in a pruned tree.
     // ---------------------------------------------------------------------
 
-    private void TreeFilter_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e) =>
+    private void TreeFilter_Changed(object? sender, SelectionChangedEventArgs e) =>
         _ = ApplyTreeFilterAsync();
 
-    private void SearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    private void SearchBox_TextChanged(object? sender, TextChangedEventArgs e)
     {
         _searchDebounceTimer.Stop();
         _searchDebounceTimer.Start();
@@ -319,7 +475,7 @@ public partial class MainWindow : Window
 
         VirtualFileSystem vfs = _vfs;
         var typeFilter = TypeFilterCombo.SelectedItem as ResourceTypeFilter ?? ResourceTypeFilter.All;
-        string searchText = SearchBox.Text.Trim();
+        string searchText = (SearchBox.Text ?? string.Empty).Trim();
         bool hideLocalized = _settings.HideLocalizedEntries;
 
         FsNode? previouslySelected = _selectedNode;
@@ -337,7 +493,7 @@ public partial class MainWindow : Window
 
         bool Matches(FsNode node) =>
             (!hideLocalized || !node.IsLocalized) &&
-            typeFilter.Matches(node.Name) &&
+            typeFilter.Matches(node) &&
             (searchText.Length == 0 || MatchesSearch(node, searchText));
 
         static string? ExtractSubtitleMatch(FsNode node, string searchText)
@@ -346,7 +502,7 @@ public partial class MainWindow : Window
                 return null;
 
             // Ignore the "[soundName]" header line; we want the actual subtitle text. If the file-name
-            // itself matched, no subtitle line is highlighted — the user already sees the file name.
+            // itself matched, no subtitle line is highlighted -- the user already sees the file name.
             if (node.DisplayName.Contains(searchText, StringComparison.OrdinalIgnoreCase))
                 return null;
 
@@ -366,7 +522,7 @@ public partial class MainWindow : Window
                 return true;
 
             // Full-text search: any subtitle/dialogue line attached to the node (see XrcStructureReader
-            // TypeDialogue → ExtendedInfo) also counts as a match. Makes the tree filter usable as a
+            // TypeDialogue -> ExtendedInfo) also counts as a match. Makes the tree filter usable as a
             // "find that line where X says Y" tool for the entire game's dialogue.
             if (node.ExtendedInfo is { Length: > 0 } lines)
             {
@@ -427,46 +583,39 @@ public partial class MainWindow : Window
             cursorVm = next;
         }
 
-        // Deferred to a lower dispatcher priority so WPF has finished materializing the tree containers
-        // before we ask them to bring the target row into view.
-        var target_ = cursorVm;
-        Dispatcher.BeginInvoke(new Action(() =>
+        // Deferred to a lower dispatcher priority so Avalonia has finished materializing the tree
+        // containers before we ask them to bring the target row into view.
+        FsNodeViewModel target_ = cursorVm;
+        Dispatcher.UIThread.Post(() =>
         {
             target_.IsExpanded = target_.IsDirectory && target_.IsExpanded;
             BringVmIntoViewAndSelect(target_);
-        }), System.Windows.Threading.DispatcherPriority.Background);
+        }, DispatcherPriority.Background);
     }
 
     private void BringVmIntoViewAndSelect(FsNodeViewModel vm)
     {
-        // Set the VM's selection intent by walking the ItemContainerGenerator chain. WPF's TreeView has no
-        // clean way to programmatically select a VM in a virtualized/lazy tree; the accepted workaround is
-        // to recursively find the TreeViewItem container and set IsSelected/BringIntoView on it.
-        var stack = new Stack<FsNodeViewModel>();
-        for (var cursor = vm; cursor is not null; )
+        Tree.SelectedItem = vm;
+
+        // Reset scroll to the top-left before asking Avalonia to bring the selection into view.
+        // Without this, TreeView's initial state after populating a big expanded tree can leave the
+        // ScrollViewer scrolled to the bottom, and if TreeContainerFromItem returns null (deep node
+        // whose container hasn't been materialized yet) BringIntoView is a no-op — so the user sees
+        // the bottom of the tree instead of the restored selection.
+        if (Tree.FindDescendantOfType<ScrollViewer>() is { } sv)
+            sv.Offset = default;
+
+        if (Tree.TreeContainerFromItem(vm) is { } container)
+            container.BringIntoView();
+
+        // BringIntoView also scrolls horizontally to reveal deep items, which pushes their ancestor
+        // indentation off the left edge. Snap X back to 0 after the scroll settles so the hierarchy
+        // stays readable; keep whatever Y BringIntoView chose so the selection remains visible.
+        Dispatcher.UIThread.Post(() =>
         {
-            stack.Push(cursor);
-            cursor = FindParentVm(cursor);
-        }
-
-        System.Windows.Controls.ItemsControl parentContainer = Tree;
-        while (stack.Count > 0)
-        {
-            FsNodeViewModel step = stack.Pop();
-            if (parentContainer.ItemContainerGenerator.ContainerFromItem(step) is not System.Windows.Controls.TreeViewItem tvi)
-                return;
-
-            if (stack.Count == 0)
-            {
-                tvi.IsSelected = true;
-                tvi.BringIntoView();
-                return;
-            }
-
-            tvi.IsExpanded = true;
-            tvi.UpdateLayout();
-            parentContainer = tvi;
-        }
+            if (Tree.FindDescendantOfType<ScrollViewer>() is { } sv2)
+                sv2.Offset = sv2.Offset.WithX(0);
+        }, DispatcherPriority.Background);
     }
 
     /// <summary>
@@ -488,7 +637,7 @@ public partial class MainWindow : Window
     /// <summary>
     /// Walks the currently-shown tree, finds the <see cref="FsNodeViewModel"/> wrapping <paramref name="node"/>
     /// (if it's been materialized already) and asks it to re-broadcast its <c>HasMod</c> flag so the
-    /// "MOD" pill in the row template updates. Silently no-ops when the VM hasn't been materialized yet —
+    /// "MOD" pill in the row template updates. Silently no-ops when the VM hasn't been materialized yet --
     /// the pill will show naturally when the row is first rendered.
     /// </summary>
     private void RefreshModIndicatorForNode(FsNode node)
@@ -520,113 +669,104 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private FsNodeViewModel? FindParentVm(FsNodeViewModel child)
-    {
-        if (Tree.ItemsSource is not IEnumerable<FsNodeViewModel> roots)
-            return null;
-        foreach (FsNodeViewModel root in roots)
-        {
-            FsNodeViewModel? p = FindParentIn(root, child);
-            if (p is not null)
-                return p;
-        }
-        return null;
-    }
-
-    private static FsNodeViewModel? FindParentIn(FsNodeViewModel current, FsNodeViewModel target)
-    {
-        foreach (FsNodeViewModel c in current.Children)
-        {
-            if (ReferenceEquals(c, target))
-                return current;
-            FsNodeViewModel? nested = FindParentIn(c, target);
-            if (nested is not null)
-                return nested;
-        }
-        return null;
-    }
-
     // ---------------------------------------------------------------------
     // Menu: File
     // ---------------------------------------------------------------------
 
-    private async void SelectFolder_Click(object sender, RoutedEventArgs e)
+    private async void SelectFolder_Click(object? sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFolderDialog { Title = "Select TLJ Install Folder" };
-        if (dialog.ShowDialog(this) != true)
+        string? folder = await Dialogs.ShowOpenFolderDialog(this, "Select TLJ Install Folder");
+        if (folder is null)
             return;
 
-        _settings.BaseDir = dialog.FolderName;
-        _settings.RegisterRecentInstall(dialog.FolderName);
+        _settings.BaseDir = folder;
+        _settings.RegisterRecentInstall(folder);
         _settings.Save();
-        await InitVfsAsync(dialog.FolderName);
+        await InitVfsAsync(folder);
         RefreshRecentInstallsMenu();
     }
 
-    private void Export_Click(object sender, RoutedEventArgs e)
+    private async void Export_Click(object? sender, RoutedEventArgs e)
     {
         if (_selectedNode is null || _currentContent is null)
         {
-            MessageBox.Show(this, "Select a file to export first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "Select a file to export first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         switch (_currentContent)
         {
             case ImageResource { Images.Count: 1 } image:
-                ExportSingleImage(image.Images[0]);
+                await ExportSingleImage(image.Images[0]);
                 break;
 
             case ImageResource image:
-                ExportMultipleImages(image.Images);
+                await ExportMultipleImages(image.Images);
                 break;
 
             case TextResource text:
-                ExportText(text.Text, "txt", Path.GetFileNameWithoutExtension(_selectedNode.Name));
+                await ExportText(text.Text, "txt", Path.GetFileNameWithoutExtension(_selectedNode.Name));
                 break;
 
             case SoundResource sound:
-                ExportExtractedFile(sound.TempFilePath);
+                await ExportExtractedFile(sound.TempFilePath);
                 break;
 
             case ExternalVideoResource video:
-                ExportExtractedFile(video.TempFilePath);
+                await ExportExtractedFile(video.TempFilePath);
                 break;
 
             case ModelResource model:
-                ExportModelAsObj(model);
+                await ExportModelAsObj(model);
                 break;
 
             case ErrorResource error:
-                MessageBox.Show(this, error.Message, "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
+                await Dialogs.ShowMessageBox(this, error.Message, "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
                 break;
         }
     }
 
-    private void ExportRaw_Click(object sender, RoutedEventArgs e)
+    private async void ExportRaw_Click(object? sender, RoutedEventArgs e)
     {
         if (_selectedNode is null || _vfs is null)
         {
-            MessageBox.Show(this, "Select a file to export first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "Select a file to export first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
+        // "Raw" means the underlying file bytes verbatim -- for an .xmg the user wants the .xmg back,
+        // not a hex dump. Preserve the source extension so the exported file round-trips through the
+        // engine's decoders (or any external tool that recognizes the format).
+        string extension = Path.GetExtension(_selectedNode.Name).TrimStart('.');
+        if (string.IsNullOrEmpty(extension))
+            extension = "bin";
+        string defaultName = SanitizeFileName(Path.GetFileNameWithoutExtension(_selectedNode.Name)) + "." + extension;
+
+        string? path = await Dialogs.ShowSaveFileDialog(
+            this, "Export Raw", defaultName,
+            [new Avalonia.Platform.Storage.FilePickerFileType($"{extension.ToUpperInvariant()} file (*.{extension})") { Patterns = [$"*.{extension}"] }],
+            _settings.LastExportDir);
+        if (path is null)
+            return;
+
         try
         {
-            TextResource raw = ResourceLoader.LoadRawForced(_selectedNode, _vfs);
-            ExportText(raw.Text, "txt", Path.GetFileNameWithoutExtension(_selectedNode.Name) + "_raw");
+            using Stream source = _vfs.OpenFile(_selectedNode);
+            using FileStream dest = File.Create(path);
+            await source.CopyToAsync(dest);
+            RememberExportFolder(path);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Raw export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Raw export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private async void BatchExport_Click(object sender, RoutedEventArgs e)
+    private async void BatchExport_Click(object? sender, RoutedEventArgs e)
     {
         if (_vfs is null)
         {
-            MessageBox.Show(this, "Load a TLJ install first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "Load a TLJ install first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -634,7 +774,7 @@ public partial class MainWindow : Window
             ? _selectedNode
             : _vfs.Root;
 
-        MessageBoxResult formatChoice = MessageBox.Show(
+        MessageBoxResult formatChoice = await Dialogs.ShowMessageBox(
             this,
             "Export images as PNG (with transparency)?\n\nYes = PNG   No = TGA   Cancel = abort",
             "TLJ Explorer",
@@ -646,7 +786,7 @@ public partial class MainWindow : Window
             ? BatchImageFormat.Png
             : BatchImageFormat.Tga;
 
-        MessageBoxResult modelFormatChoice = MessageBox.Show(
+        MessageBoxResult modelFormatChoice = await Dialogs.ShowMessageBox(
             this,
             "Export models as glTF (.glb)?\n\nYes = GLB (rigged/skinned)   No = OBJ (+ .mtl)   Cancel = abort",
             "TLJ Explorer",
@@ -658,22 +798,18 @@ public partial class MainWindow : Window
             ? BatchModelFormat.Glb
             : BatchModelFormat.Obj;
 
-        var dialog = new OpenFolderDialog
-        {
-            Title = $"Choose output folder for batch export of \"{sourceRoot.GetPath()}\"",
-        };
-        ApplyRememberedExportFolder(dialog);
-        if (dialog.ShowDialog(this) != true)
+        string? outputDir = await Dialogs.ShowOpenFolderDialog(
+            this, $"Choose output folder for batch export of \"{sourceRoot.GetPath()}\"", _settings.LastExportDir);
+        if (outputDir is null)
             return;
 
-        string outputDir = dialog.FolderName;
         RememberExportFolder(outputDir);
-        ScanProgressBar.Visibility = Visibility.Visible;
+        ScanProgressBar.IsVisible = true;
         ScanProgressBar.IsIndeterminate = false;
         ScanProgressBar.Minimum = 0;
         ScanProgressBar.Maximum = 1;
         ScanProgressBar.Value = 0;
-        CancelBatchButton.Visibility = Visibility.Visible;
+        CancelBatchButton.IsVisible = true;
         CancelBatchButton.IsEnabled = true;
         SetStatus($"Exporting {sourceRoot.GetPath()} to {outputDir}...");
 
@@ -684,7 +820,7 @@ public partial class MainWindow : Window
         _batchExportCts = new CancellationTokenSource();
         CancellationToken token = _batchExportCts.Token;
 
-        // Progress throttling: a fresh Dispatcher.BeginInvoke per file can flood the UI thread when
+        // Progress throttling: a fresh Dispatcher.UIThread.Post per file can flood the UI thread when
         // exporting thousands of assets. Only push a status update every ~40 ms of wall clock.
         DateTime lastUiUpdate = DateTime.MinValue;
 
@@ -702,7 +838,7 @@ public partial class MainWindow : Window
                     if ((now - lastUiUpdate).TotalMilliseconds < 40 && p.Index != p.Total)
                         return;
                     lastUiUpdate = now;
-                    Dispatcher.BeginInvoke(() =>
+                    Dispatcher.UIThread.Post(() =>
                     {
                         ScanProgressBar.Maximum = Math.Max(1, p.Total);
                         ScanProgressBar.Value = p.Index;
@@ -717,7 +853,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                MessageBox.Show(
+                await Dialogs.ShowMessageBox(
                     this,
                     $"Batch export complete.\n\n" +
                     $"Exported: {summary.ExportedCount}\n" +
@@ -736,13 +872,13 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Batch export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Batch export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
             SetStatus("Batch export failed.");
         }
         finally
         {
-            ScanProgressBar.Visibility = Visibility.Collapsed;
-            CancelBatchButton.Visibility = Visibility.Collapsed;
+            ScanProgressBar.IsVisible = false;
+            CancelBatchButton.IsVisible = false;
             _batchExportCts?.Dispose();
             _batchExportCts = null;
         }
@@ -753,36 +889,40 @@ public partial class MainWindow : Window
         if (_vfs is null)
             return;
 
-        var palette = new Views.CommandPaletteWindow(_vfs) { Owner = this };
-        if (palette.ShowDialog() != true || palette.SelectedNode is null)
+        _ = OpenCommandPaletteAsync();
+    }
+
+    private async Task OpenCommandPaletteAsync()
+    {
+        var palette = new CommandPaletteWindow(_vfs!);
+        FsNode? selected = await palette.ShowDialog<FsNode?>(this);
+        if (selected is null)
             return;
 
         // Selecting through the tree ensures a11y focus, selection preservation, and status-bar update all
         // work exactly the same as a manual click.
         FsNodeViewModel? rootVm = (Tree.ItemsSource as IEnumerable<FsNodeViewModel>)?.FirstOrDefault();
         if (rootVm is not null)
-            TryRestoreTreeSelection(rootVm, palette.SelectedNode);
+            TryRestoreTreeSelection(rootVm, selected);
         else
-            LoadSelectedResource(palette.SelectedNode);
+            LoadSelectedResource(selected);
     }
 
-    private async void ExportSubtitles_Click(object sender, RoutedEventArgs e)
+    private async void ExportSubtitles_Click(object? sender, RoutedEventArgs e)
     {
         if (_vfs is null)
         {
-            MessageBox.Show(this, "Load a TLJ install first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "Load a TLJ install first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var dialog = new OpenFolderDialog { Title = "Choose output folder for subtitle export" };
-        ApplyRememberedExportFolder(dialog);
-        if (dialog.ShowDialog(this) != true)
+        string? outputDir = await Dialogs.ShowOpenFolderDialog(this, "Choose output folder for subtitle export", _settings.LastExportDir);
+        if (outputDir is null)
             return;
 
-        string outputDir = dialog.FolderName;
         RememberExportFolder(outputDir);
 
-        ScanProgressBar.Visibility = Visibility.Visible;
+        ScanProgressBar.IsVisible = true;
         ScanProgressBar.IsIndeterminate = true;
         SetStatus("Collecting subtitles...");
 
@@ -799,7 +939,7 @@ public partial class MainWindow : Window
             });
 
             SetStatus($"Exported {lineCount} subtitles across {sceneCount} scene(s).");
-            MessageBox.Show(this,
+            await Dialogs.ShowMessageBox(this,
                 $"Exported {lineCount} dialogue line(s) across {sceneCount} scene(s):\n\n" +
                 $"  {Path.Combine(outputDir, "dialogue.csv")}\n" +
                 $"  {Path.Combine(outputDir, "srt")}\\*.srt",
@@ -808,67 +948,46 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus("Subtitle export failed.");
-            MessageBox.Show(this, $"Subtitle export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Subtitle export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
-            ScanProgressBar.Visibility = Visibility.Collapsed;
+            ScanProgressBar.IsVisible = false;
             ScanProgressBar.IsIndeterminate = false;
         }
     }
 
-    private void CancelBatchButton_Click(object sender, RoutedEventArgs e)
+    private void CancelBatchButton_Click(object? sender, RoutedEventArgs e)
     {
         _batchExportCts?.Cancel();
         CancelBatchButton.IsEnabled = false;
     }
 
     /// <summary>
-    /// Resolves the tree row a context-menu click came from. WPF plumbs the row's DataContext through the
-    /// MenuItem's PlacementTarget-chain — walk it back to the <see cref="FsNodeViewModel"/> so the handler
-    /// doesn't rely on TreeView.SelectedItem (which the right-click may not have updated).
+    /// Resolves the tree row a context-menu click applies to. Avalonia's ContextMenu doesn't expose a
+    /// PlacementTarget-chain to walk the way WPF's did; since right-clicking a TreeViewItem already
+    /// updates TreeView.SelectedItem before the context menu opens, using the current selection directly
+    /// is simpler and equally correct here.
     /// </summary>
-    private static FsNode? ResolveContextTarget(object sender)
-    {
-        if (sender is not System.Windows.Controls.MenuItem menuItem)
-            return null;
+    private FsNode? ResolveContextTarget(object? sender) => (Tree.SelectedItem as FsNodeViewModel)?.Node;
 
-        DependencyObject? placement = null;
-        for (DependencyObject? cursor = menuItem; cursor is not null; cursor = LogicalTreeHelper.GetParent(cursor))
-        {
-            if (cursor is System.Windows.Controls.ContextMenu cm)
-            {
-                placement = cm.PlacementTarget;
-                break;
-            }
-        }
-
-        for (DependencyObject? cursor = placement; cursor is not null; cursor = VisualTreeHelper.GetParent(cursor))
-        {
-            if (cursor is System.Windows.Controls.TreeViewItem tvi && tvi.DataContext is FsNodeViewModel vm)
-                return vm.Node;
-        }
-
-        return null;
-    }
-
-    private void TreeContextCopyPath_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextCopyPath_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null)
             return;
         try
         {
-            Clipboard.SetText(node.GetPath());
+            await Dialogs.SetClipboardTextAsync(this, node.GetPath());
             SetStatus($"Copied path: {node.GetPath()}");
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not copy to clipboard:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
+            await Dialogs.ShowMessageBox(this, $"Could not copy to clipboard:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
-    private void TreeContextRevealInExplorer_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextRevealInExplorer_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null)
@@ -877,28 +996,33 @@ public partial class MainWindow : Window
         // Only loose files (not in-archive) live on disk at a real path we can hand to Explorer.
         if ((node.NodeType & FsNodeType.InArchive) != 0 || string.IsNullOrEmpty(node.ArchivePath))
         {
-            MessageBox.Show(this,
-                "This entry lives inside a .xarc archive, not as a file on disk — Explorer can't reveal it. Use Export instead.",
+            await Dialogs.ShowMessageBox(this,
+                "This entry lives inside a .xarc archive, not as a file on disk -- Explorer can't reveal it. Use Export instead.",
                 "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         try
         {
-            Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{node.ArchivePath}\"") { UseShellExecute = true });
+            if (OperatingSystem.IsWindows())
+                Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{node.ArchivePath}\"") { UseShellExecute = true });
+            else if (OperatingSystem.IsLinux())
+                Process.Start(new ProcessStartInfo("xdg-open", $"\"{Path.GetDirectoryName(node.ArchivePath)}\"") { UseShellExecute = true });
+            else if (OperatingSystem.IsMacOS())
+                Process.Start(new ProcessStartInfo("open", $"-R \"{node.ArchivePath}\"") { UseShellExecute = true });
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not open Explorer:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Could not open file manager:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void TreeContextExportItem_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextExportItem_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null || (node.NodeType & FsNodeType.File) == 0)
         {
-            MessageBox.Show(this, "Select a file to export.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "Select a file to export.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -908,7 +1032,7 @@ public partial class MainWindow : Window
         Export_Click(this, new RoutedEventArgs());
     }
 
-    private void TreeContextViewOriginal_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextViewOriginal_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null || (node.NodeType & FsNodeType.File) == 0 || _vfs is null)
@@ -916,7 +1040,7 @@ public partial class MainWindow : Window
 
         if (!node.HasMod)
         {
-            MessageBox.Show(this, "This entry has no mod override.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "This entry has no mod override.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -925,7 +1049,7 @@ public partial class MainWindow : Window
         LoadSelectedResource(node, VirtualFileSystem.OpenVariant.Original);
     }
 
-    private void TreeContextCompareMod_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextCompareMod_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null || (node.NodeType & FsNodeType.File) == 0 || _vfs is null)
@@ -933,25 +1057,25 @@ public partial class MainWindow : Window
 
         if (!node.HasMod)
         {
-            MessageBox.Show(this, "This entry has no mod override to compare against.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "This entry has no mod override to compare against.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        ShowCompareView(node);
+        await ShowCompareView(node);
     }
 
-    private void TreeContextExtractAsMod_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextExtractAsMod_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null || _vfs is null || (node.NodeType & FsNodeType.File) == 0)
             return;
 
-        // Only archive entries need a "mod extract" — loose files are already editable in place. For
+        // Only archive entries need a "mod extract" -- loose files are already editable in place. For
         // clarity, refuse instead of silently doing nothing when the entry is already loose.
         if ((node.NodeType & FsNodeType.InArchive) == 0)
         {
-            MessageBox.Show(this,
-                "This entry is already a loose file on disk — open it in Windows Explorer instead of extracting.",
+            await Dialogs.ShowMessageBox(this,
+                "This entry is already a loose file on disk -- open it directly instead of extracting.",
                 "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -967,7 +1091,7 @@ public partial class MainWindow : Window
 
         if (File.Exists(modPath))
         {
-            MessageBoxResult overwrite = MessageBox.Show(this,
+            MessageBoxResult overwrite = await Dialogs.ShowMessageBox(this,
                 $"A mod file already exists here:\n\n{modPath}\n\nOverwrite it with the archived original?",
                 "TLJ Explorer", MessageBoxButton.YesNo, MessageBoxImage.Question);
             if (overwrite != MessageBoxResult.Yes)
@@ -996,11 +1120,11 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Extract failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Extract failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void TreeContextPlayLocalized_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextPlayLocalized_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null || node.Parent is null || _vfs is null)
@@ -1016,7 +1140,7 @@ public partial class MainWindow : Window
 
         if (sibling is null)
         {
-            MessageBox.Show(this,
+            await Dialogs.ShowMessageBox(this,
                 node.IsLocalized
                     ? "No English (flag=0) sibling found for this entry."
                     : "No localised (flag=1) sibling found for this entry.",
@@ -1027,13 +1151,13 @@ public partial class MainWindow : Window
         LoadSelectedResource(sibling);
     }
 
-    private async void TreeContextBatchExport_Click(object sender, RoutedEventArgs e)
+    private async void TreeContextBatchExport_Click(object? sender, RoutedEventArgs e)
     {
         FsNode? node = ResolveContextTarget(sender);
         if (node is null)
             return;
 
-        // If the user right-clicked a file, batch-export its parent folder — that matches Explorer's
+        // If the user right-clicked a file, batch-export its parent folder -- that matches Explorer's
         // "extract this and everything around it" idiom users are likely to reach for here.
         FsNode target = (node.NodeType & FsNodeType.Directory) != 0 ? node : (node.Parent ?? node);
 
@@ -1052,34 +1176,30 @@ public partial class MainWindow : Window
         await Task.CompletedTask;
     }
 
-    private void Exit_Click(object sender, RoutedEventArgs e) => Close();
+    private void Exit_Click(object? sender, RoutedEventArgs e) => Close();
 
-    private void ExportModelAsObj(ModelResource model)
+    private async Task ExportModelAsObj(ModelResource model)
     {
         string defaultStem = _selectedNode is not null
             ? Path.GetFileNameWithoutExtension(_selectedNode.Name)
             : "model";
 
-        var dialog = new SaveFileDialog
-        {
-            Title = "Export Model",
-            Filter = "Binary glTF (*.glb)|*.glb|Wavefront OBJ (*.obj)|*.obj",
-            FilterIndex = 1,
-            FileName = SanitizeFileName(defaultStem) + ".glb",
-        };
-        ApplyRememberedExportFolder(dialog);
-
-        if (dialog.ShowDialog(this) != true)
+        string? path = await Dialogs.ShowSaveFileDialog(
+            this, "Export Model", SanitizeFileName(defaultStem) + ".glb",
+            [new Avalonia.Platform.Storage.FilePickerFileType("Binary glTF") { Patterns = ["*.glb"] },
+             new Avalonia.Platform.Storage.FilePickerFileType("Wavefront OBJ") { Patterns = ["*.obj"] }],
+            _settings.LastExportDir);
+        if (path is null)
             return;
 
         AniAnimation? bindPose = TryLoadCurrentBindPose();
 
         try
         {
-            string ext = Path.GetExtension(dialog.FileName).ToLowerInvariant();
+            string ext = Path.GetExtension(path).ToLowerInvariant();
             if (ext == ".obj")
             {
-                ObjWriter.Write(model.Model, dialog.FileName, bindPose);
+                ObjWriter.Write(model.Model, path, bindPose);
             }
             else
             {
@@ -1090,13 +1210,13 @@ public partial class MainWindow : Window
                         ? ModelTextureResolver.Create(_vfs, model.SourceNode)
                         : null,
                 };
-                GlbWriter.Write(model.Model, dialog.FileName, options);
+                GlbWriter.Write(model.Model, path, options);
             }
-            RememberExportFolder(dialog.FileName);
+            RememberExportFolder(path);
 
             if (bindPose is null && model.Model.Skeleton.Length > 1)
             {
-                MessageBox.Show(this,
+                await Dialogs.ShowMessageBox(this,
                     "Exported without a bind-pose animation. The mesh will look like a jumble of bone-local fragments in Blender.\n\n" +
                     "Select an animation (Animation dropdown, or enable 'Include whole install') before exporting to get a properly-posed and skinned model.",
                     "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -1104,7 +1224,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1140,13 +1260,13 @@ public partial class MainWindow : Window
             // has already applied whatever it thought the default should be; override it.
             ApplyAnimationSelection(aniNode, autoPlay: true);
             SyncAnimationComboWith(aniNode);
-            ModelNoAnimationNote.Visibility = Visibility.Collapsed;
+            ModelNoAnimationNote.IsVisible = false;
 
-            SetStatus($"{aniNode.GetPath()}  →  {cirNode.Name}  (animation applied)");
+            SetStatus($"{aniNode.GetPath()}  ->  {cirNode.Name}  (animation applied)");
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not open model for animation:\n{ex.Message}",
+            _ = Dialogs.ShowMessageBox(this, $"Could not open model for animation:\n{ex.Message}",
                 "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
@@ -1188,38 +1308,34 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ExportSingleImage((string Name, DecodedImage Image) entry)
+    private async Task ExportSingleImage((string Name, DecodedImage Image) entry)
     {
-        var dialog = new SaveFileDialog
-        {
-            Title = "Export Image",
-            Filter = "PNG image (*.png)|*.png|Targa image (*.tga)|*.tga",
-            FilterIndex = 1,
-            FileName = SanitizeFileName(entry.Name) + ".png",
-        };
-        ApplyRememberedExportFolder(dialog);
-
-        if (dialog.ShowDialog(this) != true)
+        string? path = await Dialogs.ShowSaveFileDialog(
+            this, "Export Image", SanitizeFileName(entry.Name) + ".png",
+            [new Avalonia.Platform.Storage.FilePickerFileType("PNG image") { Patterns = ["*.png"] },
+             new Avalonia.Platform.Storage.FilePickerFileType("Targa image") { Patterns = ["*.tga"] }],
+            _settings.LastExportDir);
+        if (path is null)
             return;
 
         try
         {
-            string ext = Path.GetExtension(dialog.FileName).ToLowerInvariant();
+            string ext = Path.GetExtension(path).ToLowerInvariant();
             if (ext == ".tga")
-                TgaWriter.Write(entry.Image, dialog.FileName);
+                TgaWriter.Write(entry.Image, path);
             else
-                PngWriter.Write(entry.Image, dialog.FileName);
-            RememberExportFolder(dialog.FileName);
+                PngWriter.Write(entry.Image, path);
+            RememberExportFolder(path);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void ExportMultipleImages(IReadOnlyList<(string Name, DecodedImage Image)> images)
+    private async Task ExportMultipleImages(IReadOnlyList<(string Name, DecodedImage Image)> images)
     {
-        MessageBoxResult choice = MessageBox.Show(
+        MessageBoxResult choice = await Dialogs.ShowMessageBox(
             this,
             "Export as PNG (with transparency)?\n\nYes = PNG   No = TGA   Cancel = abort",
             "TLJ Explorer",
@@ -1230,12 +1346,11 @@ public partial class MainWindow : Window
         bool asPng = choice == MessageBoxResult.Yes;
         string extension = asPng ? ".png" : ".tga";
 
-        var dialog = new OpenFolderDialog { Title = "Select destination folder for exported images" };
-        ApplyRememberedExportFolder(dialog);
-        if (dialog.ShowDialog(this) != true)
+        string? folder = await Dialogs.ShowOpenFolderDialog(this, "Select destination folder for exported images", _settings.LastExportDir);
+        if (folder is null)
             return;
 
-        RememberExportFolder(dialog.FolderName);
+        RememberExportFolder(folder);
 
         int exported = 0;
         try
@@ -1243,7 +1358,7 @@ public partial class MainWindow : Window
             foreach (var (name, image) in images)
             {
                 string fileName = SanitizeFileName(string.IsNullOrEmpty(name) ? $"image_{exported}" : name) + extension;
-                string path = Path.Combine(dialog.FolderName, fileName);
+                string path = Path.Combine(folder, fileName);
                 if (asPng)
                     PngWriter.Write(image, path);
                 else
@@ -1251,78 +1366,55 @@ public partial class MainWindow : Window
                 exported++;
             }
 
-            MessageBox.Show(this, $"Exported {exported} image(s) to:\n{dialog.FolderName}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, $"Exported {exported} image(s) to:\n{folder}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Export failed after {exported} image(s):\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Export failed after {exported} image(s):\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void ExportText(string text, string extension, string defaultNameWithoutExtension)
+    private async Task ExportText(string text, string extension, string defaultNameWithoutExtension)
     {
-        var dialog = new SaveFileDialog
-        {
-            Title = "Export Text",
-            Filter = $"Text file (*.{extension})|*.{extension}",
-            FileName = SanitizeFileName(defaultNameWithoutExtension) + "." + extension,
-        };
-        ApplyRememberedExportFolder(dialog);
-
-        if (dialog.ShowDialog(this) != true)
+        string? path = await Dialogs.ShowSaveFileDialog(
+            this, "Export Text", SanitizeFileName(defaultNameWithoutExtension) + "." + extension,
+            [new Avalonia.Platform.Storage.FilePickerFileType($"Text file (*.{extension})") { Patterns = [$"*.{extension}"] }],
+            _settings.LastExportDir);
+        if (path is null)
             return;
 
         try
         {
-            File.WriteAllText(dialog.FileName, text);
-            RememberExportFolder(dialog.FileName);
+            File.WriteAllText(path, text);
+            RememberExportFolder(path);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void ExportExtractedFile(string tempFilePath)
+    private async Task ExportExtractedFile(string tempFilePath)
     {
         string extension = Path.GetExtension(tempFilePath).TrimStart('.');
-        var dialog = new SaveFileDialog
-        {
-            Title = "Export",
-            Filter = $"{extension.ToUpperInvariant()} file (*.{extension})|*.{extension}",
-            FileName = (_selectedNode is not null ? Path.GetFileNameWithoutExtension(_selectedNode.Name) : "export") + "." + extension,
-        };
-        ApplyRememberedExportFolder(dialog);
+        string defaultName = (_selectedNode is not null ? Path.GetFileNameWithoutExtension(_selectedNode.Name) : "export") + "." + extension;
 
-        if (dialog.ShowDialog(this) != true)
+        string? path = await Dialogs.ShowSaveFileDialog(
+            this, "Export", defaultName,
+            [new Avalonia.Platform.Storage.FilePickerFileType($"{extension.ToUpperInvariant()} file (*.{extension})") { Patterns = [$"*.{extension}"] }],
+            _settings.LastExportDir);
+        if (path is null)
             return;
 
         try
         {
-            File.Copy(tempFilePath, dialog.FileName, overwrite: true);
-            RememberExportFolder(dialog.FileName);
+            File.Copy(tempFilePath, path, overwrite: true);
+            RememberExportFolder(path);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Export failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-    }
-
-    /// <summary>
-    /// Points a Save-File / Open-Folder dialog at <see cref="AppSettings.LastExportDir"/> so consecutive
-    /// exports don't reset the user to Documents each time. Silently no-ops when the remembered folder no
-    /// longer exists (drive removed, user deleted it, etc.).
-    /// </summary>
-    private void ApplyRememberedExportFolder(FileDialog dialog)
-    {
-        if (!string.IsNullOrEmpty(_settings.LastExportDir) && Directory.Exists(_settings.LastExportDir))
-            dialog.InitialDirectory = _settings.LastExportDir;
-    }
-
-    private void ApplyRememberedExportFolder(OpenFolderDialog dialog)
-    {
-        if (!string.IsNullOrEmpty(_settings.LastExportDir) && Directory.Exists(_settings.LastExportDir))
-            dialog.InitialDirectory = _settings.LastExportDir;
     }
 
     private void RememberExportFolder(string chosenPath)
@@ -1368,36 +1460,31 @@ public partial class MainWindow : Window
 
     internal void ApplyTheme(string theme)
     {
-        // WPF's ThemeMode API is currently marked "for evaluation purposes only" and raises WPF0001.
-        // Suppress here rather than project-wide -- if the API changes we want the warning re-surfacing.
-#pragma warning disable WPF0001
-        ThemeMode mode = theme switch
+        Avalonia.Styling.ThemeVariant variant = theme switch
         {
-            "Light" => ThemeMode.Light,
-            "System" => ThemeMode.System,
-            _ => ThemeMode.Dark,
+            "Light" => Avalonia.Styling.ThemeVariant.Light,
+            "System" => Avalonia.Styling.ThemeVariant.Default,
+            _ => Avalonia.Styling.ThemeVariant.Dark,
         };
-        Application.Current.ThemeMode = mode;
-        this.ThemeMode = mode;
-#pragma warning restore WPF0001
+        Application.Current!.RequestedThemeVariant = variant;
     }
 
-    private void OpenSettings_Click(object sender, RoutedEventArgs e) =>
+    private void OpenSettings_Click(object? sender, RoutedEventArgs e) =>
         SettingsOverlay.Show(this, _settings);
 
-    private void AutoPlaySound_Click(object sender, RoutedEventArgs e)
+    private void AutoPlaySound_Click(object? sender, RoutedEventArgs e)
     {
         _settings.AutoPlaySound = AutoPlaySoundMenuItem.IsChecked;
         _settings.Save();
     }
 
-    private void AutoPlayVideo_Click(object sender, RoutedEventArgs e)
+    private void AutoPlayVideo_Click(object? sender, RoutedEventArgs e)
     {
         _settings.AutoPlayVideo = AutoPlayVideoMenuItem.IsChecked;
         _settings.Save();
     }
 
-    private void LoopSound_Click(object sender, RoutedEventArgs e)
+    private void LoopSound_Click(object? sender, RoutedEventArgs e)
     {
         _settings.LoopSoundPlayback = LoopSoundMenuItem.IsChecked;
         _settings.Save();
@@ -1405,20 +1492,26 @@ public partial class MainWindow : Window
 
     private void RefreshRecentInstallsMenu()
     {
-        RecentInstallsMenu.ItemsSource = _settings.RecentInstalls;
+        RecentInstallsMenu.Items.Clear();
         RecentInstallsMenu.IsEnabled = _settings.RecentInstalls.Count > 0;
+        foreach (string path in _settings.RecentInstalls)
+        {
+            var item = new MenuItem { Header = path, Tag = path };
+            item.Click += RecentInstallItem_Click;
+            RecentInstallsMenu.Items.Add(item);
+        }
     }
 
-    private async void RecentInstallItem_Click(object sender, RoutedEventArgs e)
+    private async void RecentInstallItem_Click(object? sender, RoutedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.MenuItem { DataContext: string path })
+        if (sender is not MenuItem { Tag: string path })
             return;
         if (!Directory.Exists(path))
         {
             _settings.RecentInstalls.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
             _settings.Save();
             RefreshRecentInstallsMenu();
-            MessageBox.Show(this, $"Install folder no longer exists:\n{path}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
+            await Dialogs.ShowMessageBox(this, $"Install folder no longer exists:\n{path}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         _settings.BaseDir = path;
@@ -1461,14 +1554,11 @@ public partial class MainWindow : Window
 
     internal async Task SelectExternalModsFolderAsync()
     {
-        var dialog = new OpenFolderDialog { Title = "Select External Mods Folder" };
-        if (!string.IsNullOrEmpty(_settings.ExternalModsDir) && Directory.Exists(_settings.ExternalModsDir))
-            dialog.InitialDirectory = _settings.ExternalModsDir;
-
-        if (dialog.ShowDialog(this) != true)
+        string? folder = await Dialogs.ShowOpenFolderDialog(this, "Select External Mods Folder", _settings.ExternalModsDir);
+        if (folder is null)
             return;
 
-        _settings.ExternalModsDir = dialog.FolderName;
+        _settings.ExternalModsDir = folder;
         _settings.Save();
 
         if (!string.IsNullOrEmpty(_settings.BaseDir))
@@ -1492,63 +1582,55 @@ public partial class MainWindow : Window
             await InitVfsAsync(_settings.BaseDir);
     }
 
-    internal void PromptForFfmpeg() => PromptForFfmpegPath();
+    internal void PromptForFfmpeg() => _ = PromptForFfmpegPathAsync();
 
     /// <summary>
-    /// Verifies <see cref="AppSettings.FfmpegPath"/> points at an existing ffmpeg.exe. When missing,
-    /// shows a message with download links and offers a file picker to locate it. Returns true only
-    /// if a valid ffmpeg.exe is available after the interaction.
+    /// Verifies <see cref="AppSettings.FfmpegPath"/> points at an existing ffmpeg executable. When
+    /// missing, shows a message with download links and offers a file picker to locate it. Returns true
+    /// only if a valid ffmpeg is available after the interaction.
     /// </summary>
-    private bool EnsureFfmpegAvailable()
+    private async Task<bool> EnsureFfmpegAvailable()
     {
         if (File.Exists(_settings.FfmpegPath))
             return true;
 
         const string message =
-            "ffmpeg.exe was not found — it's required to play Bink/Smacker videos.\n\n" +
-            "Download the \"shared\" (or \"full-shared\") Windows build from one of:\n" +
-            "  • https://www.gyan.dev/ffmpeg/builds/  (\"release full shared\" or \"essentials shared\")\n" +
-            "  • https://github.com/BtbN/FFmpeg-Builds/releases  (\"...win64-gpl-shared...\" or \"...win64-lgpl-shared...\")\n\n" +
-            "Extract the archive somewhere permanent, then click OK to point the app at the ffmpeg.exe inside its bin\\ folder.";
+            "ffmpeg was not found -- it's required to play Bink/Smacker videos.\n\n" +
+            "Download a build from one of:\n" +
+            "  - https://www.gyan.dev/ffmpeg/builds/  (Windows: \"release full shared\" or \"essentials shared\")\n" +
+            "  - https://github.com/BtbN/FFmpeg-Builds/releases  (\"...shared...\" builds)\n" +
+            "  - your Linux distro's package manager (e.g. apt install ffmpeg)\n\n" +
+            "Extract it somewhere permanent, then click OK to point the app at the ffmpeg binary.";
 
-        MessageBoxResult res = MessageBox.Show(
+        MessageBoxResult res = await Dialogs.ShowMessageBox(
             this, message, "ffmpeg not found",
             MessageBoxButton.OKCancel, MessageBoxImage.Information);
 
         if (res != MessageBoxResult.OK)
             return false;
 
-        return PromptForFfmpegPath();
+        return await PromptForFfmpegPathAsync();
     }
 
-    /// <summary>Opens a file picker for ffmpeg.exe and, if the user selects one, saves it to settings.
-    /// Returns true when a valid ffmpeg.exe is set at the end.</summary>
-    private bool PromptForFfmpegPath()
+    /// <summary>Opens a file picker for the ffmpeg executable and, if the user selects one, saves it to
+    /// settings. Returns true when a valid ffmpeg is set at the end.</summary>
+    private async Task<bool> PromptForFfmpegPathAsync()
     {
-        var dialog = new OpenFileDialog
-        {
-            Title = "Locate ffmpeg.exe",
-            Filter = "ffmpeg.exe|ffmpeg.exe|Executables (*.exe)|*.exe|All files (*.*)|*.*",
-            FileName = "ffmpeg.exe",
-            CheckFileExists = true,
-        };
-
-        if (File.Exists(_settings.FfmpegPath))
-            dialog.InitialDirectory = Path.GetDirectoryName(_settings.FfmpegPath);
-
-        if (dialog.ShowDialog(this) != true)
+        string suggestedDir = File.Exists(_settings.FfmpegPath) ? Path.GetDirectoryName(_settings.FfmpegPath)! : "";
+        string? path = await Dialogs.ShowOpenFileDialog(this, "Locate ffmpeg", null, suggestedDir);
+        if (path is null)
             return File.Exists(_settings.FfmpegPath);
 
-        _settings.FfmpegPath = dialog.FileName;
+        _settings.FfmpegPath = path;
         _settings.Save();
         return true;
     }
 
-    internal void RunExternalModsDiagnostic()
+    internal async void RunExternalModsDiagnostic()
     {
         if (_vfs is null)
         {
-            MessageBox.Show(this, "Load a TLJ install first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "Load a TLJ install first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -1556,7 +1638,7 @@ public partial class MainWindow : Window
 
         ClearContentPanels();
         TextPanel.Text = report;
-        TextViewer.Visibility = Visibility.Visible;
+        TextViewer.IsVisible = true;
         SetStatus("External mods diagnostic report shown in the viewer.");
     }
 
@@ -1564,9 +1646,9 @@ public partial class MainWindow : Window
     // Tree selection
     // ---------------------------------------------------------------------
 
-    private void Tree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    private void Tree_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (e.NewValue is not FsNodeViewModel { IsPlaceholder: false } vm)
+        if (Tree.SelectedItem is not FsNodeViewModel { IsPlaceholder: false } vm)
             return;
 
         SetStatus(vm.Node.GetPath());
@@ -1614,7 +1696,7 @@ public partial class MainWindow : Window
 
         int generation = ++_sceneLoadGeneration;
         ClearContentPanels();
-        ScenePanel.Visibility = Visibility.Visible;
+        ScenePanel.IsVisible = true;
         SceneStatusText.Text = "Rendering scene...";
         SceneCanvas.Children.Clear();
         SceneCanvas.Children.Add(SceneBaseImage);
@@ -1624,15 +1706,48 @@ public partial class MainWindow : Window
         AppSettings settings = _settings;
         TempFileTracker tempFiles = _tempFiles;
 
-        ResourceContent? scene = await Task.Run(
-            () => ResourceLoader.LoadScene(folder, vfs, settings, tempFiles));
+        Log.Info($"LoadSelectedFolder gen={generation} path=\"{folder.GetPath()}\" name=\"{folder.Name}\" children={folder.Children.Count}");
+
+        ResourceContent? scene;
+        try
+        {
+            scene = await Task.Run(
+                () => ResourceLoader.LoadScene(folder, vfs, settings, tempFiles));
+        }
+        catch (Exception ex)
+        {
+            Log.Exception($"LoadSelectedFolder gen={generation}", ex);
+            scene = new ErrorResource(
+                $"Scene load threw an exception for \"{folder.GetPath()}\":\n{ex.GetType().Name}: {ex.Message}\n\n{ex.StackTrace}");
+        }
+
+        Log.Info($"LoadSelectedFolder gen={generation} result={scene?.GetType().Name ?? "null"}");
 
         if (generation != _sceneLoadGeneration)
             return;
 
         if (scene is null)
         {
-            ClearContentPanels();
+            // Not a scene folder. Surface the reason in-panel so the user isn't left staring at a black
+            // pane -- LoadScene returns null when there's no .xrc child at all, or when every .xrc in the
+            // folder decoded but yielded no drawable backdrop/layers (item-container XRCs, sound-only
+            // scenes, etc.). Tailor the message to which case actually happened so the reader isn't
+            // sent looking for a file that's plainly in the tree.
+            string expected = folder.Name + ".xrc";
+            List<string> xrcNames = folder.Children
+                .Where(c => (c.NodeType & FsNodeType.File) != 0 &&
+                            c.Name.EndsWith(".xrc", StringComparison.OrdinalIgnoreCase))
+                .Select(c => c.Name)
+                .ToList();
+
+            string detail;
+            if (xrcNames.Count == 0)
+                detail = "No .xrc file inside this folder -- not a scene root.";
+            else
+                detail = $"Tried {string.Join(", ", xrcNames.Select(n => $"\"{n}\""))}; none declared a drawable backdrop or layers.";
+
+            SceneStatusText.Text = $"Not a renderable scene folder.  {detail}";
+            ScenePanel.IsVisible = true;
             return;
         }
 
@@ -1661,7 +1776,7 @@ public partial class MainWindow : Window
         VirtualFileSystem vfs = _vfs;
         AppSettings settings = _settings;
         TempFileTracker tempFiles = _tempFiles;
-        SetStatus($"{node.GetPath()}  —  loading...");
+        SetStatus($"{node.GetPath()}  -  loading...");
 
         ResourceContent content;
         try
@@ -1688,7 +1803,7 @@ public partial class MainWindow : Window
             VirtualFileSystem.OpenVariant.Mod when node.HasMod => "  [modded]",
             _ => node.HasMod && vfs.LoadMods ? "  [modded]" : "",
         };
-        SetStatus($"{node.GetPath()}  —  {FormatContentMetadata(node, content)}{variantSuffix}");
+        SetStatus($"{node.GetPath()}  -  {FormatContentMetadata(node, content)}{variantSuffix}");
     }
 
     /// <summary>
@@ -1702,7 +1817,7 @@ public partial class MainWindow : Window
         string details = content switch
         {
             ImageResource { Images.Count: 1 } single =>
-                $"{single.Images[0].Image.Width}×{single.Images[0].Image.Height}",
+                $"{single.Images[0].Image.Width}x{single.Images[0].Image.Height}",
             ImageResource multi =>
                 $"{multi.Images.Count} sub-images",
             ModelResource m =>
@@ -1746,14 +1861,14 @@ public partial class MainWindow : Window
 
     private void ClearContentPanels()
     {
-        ImagePanel.Visibility = Visibility.Collapsed;
-        TextViewer.Visibility = Visibility.Collapsed;
-        AniSourceHeader.Visibility = Visibility.Collapsed;
-        SoundPanel.Visibility = Visibility.Collapsed;
-        VideoPanel.Visibility = Visibility.Collapsed;
-        ModelPanel.Visibility = Visibility.Collapsed;
-        ScenePanel.Visibility = Visibility.Collapsed;
-        ImageComparePanel.Visibility = Visibility.Collapsed;
+        ImagePanel.IsVisible = false;
+        TextViewer.IsVisible = false;
+        AniSourceHeader.IsVisible = false;
+        SoundPanel.IsVisible = false;
+        VideoPanel.IsVisible = false;
+        ModelPanel.IsVisible = false;
+        ScenePanel.IsVisible = false;
+        ImageComparePanel.IsVisible = false;
 
         StopVideo();
         StopSceneAnimation();
@@ -1777,7 +1892,6 @@ public partial class MainWindow : Window
 
     private const double MinZoom = 0.25;
     private const double MaxZoom = 16.0;
-    private const double PreferredDisplaySize = 320.0;
 
     private void ShowContent(ResourceContent content)
     {
@@ -1791,7 +1905,7 @@ public partial class MainWindow : Window
 
             case TextResource text:
                 TextPanel.Text = text.Text;
-                TextViewer.Visibility = Visibility.Visible;
+                TextViewer.IsVisible = true;
                 break;
 
             case SoundResource sound:
@@ -1804,7 +1918,7 @@ public partial class MainWindow : Window
 
             case ErrorResource error:
                 TextPanel.Text = error.Message;
-                TextViewer.Visibility = Visibility.Visible;
+                TextViewer.IsVisible = true;
                 break;
 
             case ModelResource model:
@@ -1825,7 +1939,7 @@ public partial class MainWindow : Window
     /// Decodes the original and the mod variants of <paramref name="node"/> and swaps in the compare
     /// panel. Only images (XMG/TM) are supported by this view; other file types show a message.
     /// </summary>
-    private void ShowCompareView(FsNode node)
+    private async Task ShowCompareView(FsNode node)
     {
         if (_vfs is null)
             return;
@@ -1833,7 +1947,7 @@ public partial class MainWindow : Window
         string ext = Path.GetExtension(node.Name).ToLowerInvariant();
         if (ext is not (".xmg" or ".tm"))
         {
-            MessageBox.Show(this,
+            await Dialogs.ShowMessageBox(this,
                 "The vertical-wipe compare view currently supports images (.xmg, .tm) only. Use the A/B toggle in the sound/model panels for other asset kinds.",
                 "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
@@ -1843,7 +1957,7 @@ public partial class MainWindow : Window
         DecodedImage? modded = TryDecodeSingleImage(node, VirtualFileSystem.OpenVariant.Mod, ext);
         if (original is null || modded is null)
         {
-            MessageBox.Show(this, "Could not decode both variants for comparison.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
+            await Dialogs.ShowMessageBox(this, "Could not decode both variants for comparison.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -1876,8 +1990,8 @@ public partial class MainWindow : Window
         }
     }
 
-    private BitmapSource? _compareOriginalBitmap;
-    private BitmapSource? _compareModBitmap;
+    private Bitmap? _compareOriginalBitmap;
+    private Bitmap? _compareModBitmap;
     private double _compareWipeX;
     private double _compareZoom = 1.0;
     private bool _compareFitToWindow;
@@ -1887,8 +2001,8 @@ public partial class MainWindow : Window
 
     private void ShowImageCompare(ImageCompareResource compare)
     {
-        _compareOriginalBitmap = ToBitmapSource(compare.Original);
-        _compareModBitmap = ToBitmapSource(compare.Modded);
+        _compareOriginalBitmap = ToBitmap(compare.Original);
+        _compareModBitmap = ToBitmap(compare.Modded);
 
         // Canvas = the max of each axis so both images can display at their native pixel grid without one
         // being sub-sampled. When the mod is higher-res (typical for HD packs), the original scales up via
@@ -1908,16 +2022,16 @@ public partial class MainWindow : Window
         ImageCompareSideMod.Width = _compareCanvasWidth; ImageCompareSideMod.Height = _compareCanvasHeight;
 
         _compareWipeX = _compareCanvasWidth / 2.0;
-        // Panel is still Collapsed at this point, so the compare ScrollViewers have no ActualWidth
-        // yet — ComputeCompareDefaultZoom would fall back to 1.0 and crop large images. Defer the
-        // fit calculation until after WPF lays the panel out.
+        // Panel is still hidden at this point, so the compare ScrollViewers have no Bounds yet --
+        // ComputeCompareDefaultZoom would fall back to 1.0 and crop large images. Defer the fit
+        // calculation until after Avalonia lays the panel out.
         ApplyCompareDefaultZoomWhenReady();
         UpdateCompareClip();
 
-        ImageCompareLabel.Text = $"Comparing {compare.OriginalLabel} — original {compare.Original.Width}×{compare.Original.Height}, " +
-                                 $"mod {compare.Modded.Width}×{compare.Modded.Height}, canvas {_compareCanvasWidth}×{_compareCanvasHeight}";
+        ImageCompareLabel.Text = $"Comparing {compare.OriginalLabel} -- original {compare.Original.Width}x{compare.Original.Height}, " +
+                                 $"mod {compare.Modded.Width}x{compare.Modded.Height}, canvas {_compareCanvasWidth}x{_compareCanvasHeight}";
 
-        ImageComparePanel.Visibility = Visibility.Visible;
+        ImageComparePanel.IsVisible = true;
         ApplyImageCompareMode();
     }
 
@@ -1935,12 +2049,19 @@ public partial class MainWindow : Window
         // Dual clip: ORIGINAL renders only on the LEFT of the divider, MOD only on the RIGHT. Because
         // neither image draws over the other's half, transparent pixels don't reveal a stretched low-res
         // version of the other side.
-        ImageCompareOriginalClip.Rect = new Rect(0, 0, x, _compareCanvasHeight);
-        ImageCompareClip.Rect = new Rect(x, 0, _compareCanvasWidth - x, _compareCanvasHeight);
+        _imageCompareOriginalClip.Rect = new Rect(0, 0, x, _compareCanvasHeight);
+        _imageCompareModClip.Rect = new Rect(x, 0, _compareCanvasWidth - x, _compareCanvasHeight);
+
+        // Avalonia's Visual.Clip only auto-invalidates the visual when the Clip property itself is
+        // reassigned to a different object -- Geometry (unlike e.g. DrawingImage) doesn't implement the
+        // internal IAffectsRender interface, so mutating an existing RectangleGeometry's Rect in place
+        // (as above) is otherwise silently ignored until something else happens to trigger a repaint.
+        ImageCompareOriginalImage.InvalidateVisual();
+        ImageCompareModImage.InvalidateVisual();
 
         // The divider and its hit-area live inside the zoomed stage, so their local (unscaled) width has to
         // be divided by the current zoom to hold a constant on-screen pixel size. Without this, zooming
-        // out to say 0.1× reduces a 2-unit bar to 0.2 screen pixels — invisible.
+        // out to say 0.1x reduces a 2-unit bar to 0.2 screen pixels -- invisible.
         double zoom = Math.Max(_compareZoom, 1e-4);
         double dividerLocalWidth = CompareDividerScreenWidth / zoom;
         double handleLocalWidth = CompareDividerHandleScreenWidth / zoom;
@@ -1957,32 +2078,43 @@ public partial class MainWindow : Window
     private void ApplyImageCompareMode()
     {
         bool wipe = ImageCompareWipeMode.IsChecked == true;
-        ImageCompareWipeScroll.Visibility = wipe ? Visibility.Visible : Visibility.Collapsed;
-        ImageCompareSideBySideContainer.Visibility = wipe ? Visibility.Collapsed : Visibility.Visible;
+        ImageCompareWipeScroll.IsVisible = wipe;
+        ImageCompareSideBySideContainer.IsVisible = !wipe;
     }
 
-    private void ImageCompareMode_Changed(object sender, RoutedEventArgs e)
+    private void ImageCompareMode_Changed(object? sender, RoutedEventArgs e)
     {
-        if (ImageComparePanel.Visibility == Visibility.Visible)
-            ApplyImageCompareMode();
+        if (!ImageComparePanel.IsVisible)
+            return;
+
+        ApplyImageCompareMode();
+
+        // Wipe and side-by-side show different ScrollViewers with different viewport sizes (side-by-side
+        // splits the width between two panes), so a zoom that was fit to the mode being left behind can
+        // leave the newly-shown one over/under-zoomed -- previously this only got fixed by closing and
+        // reopening the compare view, which re-ran the fit against whichever mode ended up visible. Only
+        // re-fit when the user hasn't manually zoomed/panned, same guard ImageCompareScroll_SizeChanged
+        // uses.
+        if (_compareFitToWindow)
+            ApplyCompareDefaultZoomWhenReady();
     }
 
     // -------------------- Wipe drag (on the transparent divider handle overlay) --------------------
 
     private bool _compareWipeDragging;
 
-    private void ImageCompareDividerHandle_MouseDown(object sender, MouseButtonEventArgs e)
+    private void ImageCompareDividerHandle_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         _compareWipeDragging = true;
         _compareWipeX = e.GetPosition(ImageCompareStage).X;
         UpdateCompareClip();
-        ImageCompareDividerHandle.CaptureMouse();
+        e.Pointer.Capture(ImageCompareDividerHandle);
         // Handled=true prevents the click from bubbling up to the ScrollViewer's pan handler, which would
-        // otherwise start a pan on the same MouseDown.
+        // otherwise start a pan on the same press.
         e.Handled = true;
     }
 
-    private void ImageCompareDividerHandle_MouseMove(object sender, MouseEventArgs e)
+    private void ImageCompareDividerHandle_PointerMoved(object? sender, PointerEventArgs e)
     {
         if (!_compareWipeDragging)
             return;
@@ -1990,10 +2122,10 @@ public partial class MainWindow : Window
         UpdateCompareClip();
     }
 
-    private void ImageCompareDividerHandle_MouseUp(object sender, MouseButtonEventArgs e)
+    private void ImageCompareDividerHandle_PointerReleased(object? sender, PointerReleasedEventArgs e)
     {
         _compareWipeDragging = false;
-        ImageCompareDividerHandle.ReleaseMouseCapture();
+        e.Pointer.Capture(null);
     }
 
     // -------------------- Pan (left-drag on any compare ScrollViewer) --------------------
@@ -2001,32 +2133,33 @@ public partial class MainWindow : Window
     private Point? _comparePanStart;
     private double _comparePanStartH;
     private double _comparePanStartV;
-    private System.Windows.Controls.ScrollViewer? _comparePanTarget;
+    private ScrollViewer? _comparePanTarget;
 
-    private void ImageComparePanScroll_MouseDown(object sender, MouseButtonEventArgs e)
+    private void ImageComparePanScroll_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.ScrollViewer sv)
+        if (sender is not ScrollViewer sv)
+            return;
+        if (e.GetCurrentPoint(sv).Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed)
             return;
 
-        // Don't hijack clicks that landed on the wipe-divider handle — those belong to the wipe drag,
-        // not to panning. Preview events tunnel root→leaf, so this ScrollViewer handler runs BEFORE the
-        // handle's own MouseDown; check OriginalSource explicitly to defer to it.
-        if (e.OriginalSource is DependencyObject src && IsInDividerHandle(src))
+        // Don't hijack clicks that landed on the wipe-divider handle -- those belong to the wipe drag,
+        // not to panning.
+        if (e.Source is Visual src && IsInDividerHandle(src))
             return;
 
         _comparePanTarget = sv;
         _comparePanStart = e.GetPosition(sv);
-        _comparePanStartH = sv.HorizontalOffset;
-        _comparePanStartV = sv.VerticalOffset;
-        sv.CaptureMouse();
-        Mouse.OverrideCursor = Cursors.SizeAll;
+        _comparePanStartH = sv.Offset.X;
+        _comparePanStartV = sv.Offset.Y;
+        e.Pointer.Capture(sv);
+        sv.Cursor = new Cursor(StandardCursorType.SizeAll);
         e.Handled = true;
     }
 
     /// <summary>True when <paramref name="src"/> is (or is nested under) the wipe divider handle.</summary>
-    private bool IsInDividerHandle(DependencyObject src)
+    private bool IsInDividerHandle(Visual src)
     {
-        for (DependencyObject? cursor = src; cursor is not null; cursor = System.Windows.Media.VisualTreeHelper.GetParent(cursor))
+        for (Visual? cursor = src; cursor is not null; cursor = cursor.GetVisualParent())
         {
             if (ReferenceEquals(cursor, ImageCompareDividerHandle))
                 return true;
@@ -2034,27 +2167,29 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private void ImageComparePanScroll_MouseMove(object sender, MouseEventArgs e)
+    private void ImageComparePanScroll_PointerMoved(object? sender, PointerEventArgs e)
     {
         if (_comparePanStart is not { } start || _comparePanTarget is null)
             return;
-        if (e.LeftButton != MouseButtonState.Pressed)
+        if (!e.GetCurrentPoint(_comparePanTarget).Properties.IsLeftButtonPressed)
             return;
 
         Point p = e.GetPosition(_comparePanTarget);
-        _comparePanTarget.ScrollToHorizontalOffset(_comparePanStartH - (p.X - start.X));
-        _comparePanTarget.ScrollToVerticalOffset(_comparePanStartV - (p.Y - start.Y));
+        _comparePanTarget.Offset = new Vector(
+            _comparePanStartH - (p.X - start.X),
+            _comparePanStartV - (p.Y - start.Y));
     }
 
-    private void ImageComparePanScroll_MouseUp(object sender, MouseButtonEventArgs e)
+    private void ImageComparePanScroll_PointerReleased(object? sender, PointerReleasedEventArgs e)
     {
         _comparePanStart = null;
-        _comparePanTarget?.ReleaseMouseCapture();
+        if (_comparePanTarget is not null)
+            _comparePanTarget.Cursor = new Cursor(StandardCursorType.Hand);
+        e.Pointer.Capture(null);
         _comparePanTarget = null;
-        Mouse.OverrideCursor = null;
     }
 
-    private void ImageCompareClose_Click(object sender, RoutedEventArgs e)
+    private void ImageCompareClose_Click(object? sender, RoutedEventArgs e)
     {
         if (_selectedNode is not null)
             LoadSelectedResource(_selectedNode);
@@ -2073,15 +2208,15 @@ public partial class MainWindow : Window
 
         // See SetZoom: the slider raises ValueChanged during InitializeComponent, before named XAML
         // fields are wired up. Bail out until the window is initialized.
-        if (!IsInitialized)
+        if (!_initialized)
             return;
 
-        ImageCompareStageScale.ScaleX = _compareZoom;
-        ImageCompareStageScale.ScaleY = _compareZoom;
-        ImageCompareSideOriginalScale.ScaleX = _compareZoom;
-        ImageCompareSideOriginalScale.ScaleY = _compareZoom;
-        ImageCompareSideModScale.ScaleX = _compareZoom;
-        ImageCompareSideModScale.ScaleY = _compareZoom;
+        _imageCompareStageScale.ScaleX = _compareZoom;
+        _imageCompareStageScale.ScaleY = _compareZoom;
+        _imageCompareSideOriginalScale.ScaleX = _compareZoom;
+        _imageCompareSideOriginalScale.ScaleY = _compareZoom;
+        _imageCompareSideModScale.ScaleX = _compareZoom;
+        _imageCompareSideModScale.ScaleY = _compareZoom;
         ImageCompareZoomLabel.Text = $"{_compareZoom * 100:0}%";
         _syncingCompareZoomSlider = true;
         try { ImageCompareZoomSlider.Value = _compareZoom * 100.0; }
@@ -2093,21 +2228,21 @@ public partial class MainWindow : Window
             UpdateCompareClip();
     }
 
-    private void ImageCompareZoomIn_Click(object sender, RoutedEventArgs e)
+    private void ImageCompareZoomIn_Click(object? sender, RoutedEventArgs e)
     {
         _compareFitToWindow = false;
         SetCompareZoom(_compareZoom * 1.25);
     }
-    private void ImageCompareZoomOut_Click(object sender, RoutedEventArgs e)
+    private void ImageCompareZoomOut_Click(object? sender, RoutedEventArgs e)
     {
         _compareFitToWindow = false;
         SetCompareZoom(_compareZoom / 1.25);
     }
-    private void ImageCompareZoomReset_Click(object sender, RoutedEventArgs e) => ApplyCompareDefaultZoomWhenReady();
+    private void ImageCompareZoomReset_Click(object? sender, RoutedEventArgs e) => ApplyCompareDefaultZoomWhenReady();
 
     /// <summary>
     /// Default zoom for the compare view: fit the shared canvas inside whichever ScrollViewer is
-    /// currently visible (wipe or the first side-by-side pane), capped at 8×. Same rule as the main
+    /// currently visible (wipe or the first side-by-side pane), capped at 8x. Same rule as the main
     /// image panel and the scene panel.
     /// </summary>
     private double ComputeCompareDefaultZoom()
@@ -2116,13 +2251,10 @@ public partial class MainWindow : Window
             return 1.0;
 
         // Prefer the currently-visible ScrollViewer for size probing so the fit works out in both modes.
-        System.Windows.Controls.ScrollViewer probe =
-            ImageCompareWipeScroll.Visibility == Visibility.Visible
-                ? ImageCompareWipeScroll
-                : ImageCompareSideOriginalScroll;
+        ScrollViewer probe = ImageCompareWipeScroll.IsVisible ? ImageCompareWipeScroll : ImageCompareSideOriginalScroll;
 
-        double vpW = probe.ActualWidth;
-        double vpH = probe.ActualHeight;
+        double vpW = probe.Bounds.Width;
+        double vpH = probe.Bounds.Height;
         if (vpW <= 0 || vpH <= 0)
             return 1.0;
 
@@ -2131,21 +2263,17 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Applies the fit-to-window zoom to the compare stage, deferring until WPF has laid out the
+    /// Applies the fit-to-window zoom to the compare stage, deferring until Avalonia has laid out the
     /// compare ScrollViewers if they're not measured yet (entry to compare mode toggles their
-    /// visibility, so ActualWidth is 0 on the same tick).
+    /// visibility, so Bounds is empty on the same tick).
     /// </summary>
     private void ApplyCompareDefaultZoomWhenReady()
     {
-        System.Windows.Controls.ScrollViewer probe =
-            ImageCompareWipeScroll.Visibility == Visibility.Visible
-                ? ImageCompareWipeScroll
-                : ImageCompareSideOriginalScroll;
+        ScrollViewer probe = ImageCompareWipeScroll.IsVisible ? ImageCompareWipeScroll : ImageCompareSideOriginalScroll;
 
-        if (probe.ActualWidth <= 0 || probe.ActualHeight <= 0)
+        if (probe.Bounds.Width <= 0 || probe.Bounds.Height <= 0)
         {
-            Dispatcher.BeginInvoke(new Action(ApplyCompareDefaultZoomWhenReady),
-                System.Windows.Threading.DispatcherPriority.Loaded);
+            Dispatcher.UIThread.Post(ApplyCompareDefaultZoomWhenReady, DispatcherPriority.Loaded);
             return;
         }
 
@@ -2153,16 +2281,16 @@ public partial class MainWindow : Window
         _compareFitToWindow = true;
     }
 
-    private void ImageCompareScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    private void ImageCompareScroll_SizeChanged(object? sender, SizeChangedEventArgs e)
     {
-        if (_compareFitToWindow && ImageComparePanel.Visibility == Visibility.Visible)
+        if (_compareFitToWindow && ImageComparePanel.IsVisible)
             ApplyCompareDefaultZoomWhenReady();
     }
 
-    private void ImageCompare_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    private void ImageCompare_PreviewPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
         _compareFitToWindow = false;
-        SetCompareZoom(e.Delta > 0 ? _compareZoom * 1.25 : _compareZoom / 1.25);
+        SetCompareZoom(e.Delta.Y > 0 ? _compareZoom * 1.25 : _compareZoom / 1.25);
         e.Handled = true;
     }
 
@@ -2171,13 +2299,13 @@ public partial class MainWindow : Window
     /// aligned across the divider. Guarded by <see cref="_syncingCompareScroll"/> so echoing the offset
     /// back doesn't ping-pong forever.
     /// </summary>
-    private void ImageCompareSideScroll_ScrollChanged(object sender, System.Windows.Controls.ScrollChangedEventArgs e)
+    private void ImageCompareSideScroll_ScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
         if (_syncingCompareScroll)
             return;
 
-        System.Windows.Controls.ScrollViewer? source = sender as System.Windows.Controls.ScrollViewer;
-        System.Windows.Controls.ScrollViewer? other =
+        ScrollViewer? source = sender as ScrollViewer;
+        ScrollViewer? other =
             ReferenceEquals(source, ImageCompareSideOriginalScroll) ? ImageCompareSideModScroll :
             ReferenceEquals(source, ImageCompareSideModScroll) ? ImageCompareSideOriginalScroll : null;
         if (source is null || other is null)
@@ -2186,10 +2314,8 @@ public partial class MainWindow : Window
         _syncingCompareScroll = true;
         try
         {
-            if (Math.Abs(other.HorizontalOffset - source.HorizontalOffset) > 0.5)
-                other.ScrollToHorizontalOffset(source.HorizontalOffset);
-            if (Math.Abs(other.VerticalOffset - source.VerticalOffset) > 0.5)
-                other.ScrollToVerticalOffset(source.VerticalOffset);
+            if (Math.Abs(other.Offset.X - source.Offset.X) > 0.5 || Math.Abs(other.Offset.Y - source.Offset.Y) > 0.5)
+                other.Offset = source.Offset;
         }
         finally
         {
@@ -2199,16 +2325,22 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Displays a composited XRC scene: the base bitmap fills the Canvas, and each animated overlay
-    /// becomes an <see cref="System.Windows.Controls.Image"/> at its <c>(x,y)</c>, whose Source is cycled
-    /// by a shared <see cref="DispatcherTimer"/> at the fastest overlay's framerate.
+    /// becomes an <see cref="Image"/> at its <c>(x,y)</c>, whose Source is cycled by a shared
+    /// <see cref="DispatcherTimer"/> at the fastest overlay's framerate.
     /// </summary>
     private void ShowScene(SceneResource scene)
     {
         StopSceneAnimation();
 
         SceneBaseImage.Source = scene.Base;
-        SceneCanvas.Width = scene.Base.PixelWidth;
-        SceneCanvas.Height = scene.Base.PixelHeight;
+        // Canvas measures children with an infinite constraint, and Avalonia's Image control returns
+        // DesiredSize=0 in that case unless it has an explicit Width/Height. Overlays already get
+        // theirs set (see the loop below) -- do the same for the backdrop so it actually paints, rather
+        // than laying out at 0x0 and leaving the panel's black background showing through.
+        SceneBaseImage.Width = scene.Base.PixelSize.Width;
+        SceneBaseImage.Height = scene.Base.PixelSize.Height;
+        SceneCanvas.Width = scene.Base.PixelSize.Width;
+        SceneCanvas.Height = scene.Base.PixelSize.Height;
 
         SceneCanvas.Children.Clear();
         SceneCanvas.Children.Add(SceneBaseImage);
@@ -2220,15 +2352,15 @@ public partial class MainWindow : Window
             if (overlay.Frames.Count == 0)
                 continue;
 
-            var img = new System.Windows.Controls.Image
+            var img = new Image
             {
                 Source = overlay.Frames[0],
-                Width = overlay.Frames[0].PixelWidth,
-                Height = overlay.Frames[0].PixelHeight,
+                Width = overlay.Width,
+                Height = overlay.Height,
             };
-            System.Windows.Media.RenderOptions.SetBitmapScalingMode(img, System.Windows.Media.BitmapScalingMode.NearestNeighbor);
-            System.Windows.Controls.Canvas.SetLeft(img, overlay.X);
-            System.Windows.Controls.Canvas.SetTop(img, overlay.Y);
+            RenderOptions.SetBitmapInterpolationMode(img, BitmapInterpolationMode.None);
+            Canvas.SetLeft(img, overlay.X);
+            Canvas.SetTop(img, overlay.Y);
             SceneCanvas.Children.Add(img);
 
             _sceneOverlays.Add(new SceneOverlayInstance(img, overlay.Frames));
@@ -2242,8 +2374,7 @@ public partial class MainWindow : Window
             : $"Scene {(int)SceneCanvas.Width}x{(int)SceneCanvas.Height} -- {scene.Overlays.Count} animated overlay(s)";
 
         SetSceneZoom(ComputeSceneDefaultZoom());
-        SceneScrollViewer.ScrollToHorizontalOffset(0);
-        SceneScrollViewer.ScrollToVerticalOffset(0);
+        SceneScrollViewer.Offset = new Vector(0, 0);
 
         if (_sceneOverlays.Count > 0)
         {
@@ -2252,7 +2383,7 @@ public partial class MainWindow : Window
             _sceneFrameTimer.Start();
         }
 
-        ScenePanel.Visibility = Visibility.Visible;
+        ScenePanel.IsVisible = true;
     }
 
     private void SceneFrameTimer_Tick(object? sender, EventArgs e)
@@ -2283,37 +2414,35 @@ public partial class MainWindow : Window
     {
         _sceneZoom = Math.Clamp(zoom, MinZoom, MaxZoom);
 
-        // See SetZoom: the slider raises ValueChanged during InitializeComponent, before named XAML
-        // fields are wired up. Bail out until the window is initialized.
-        if (!IsInitialized)
+        if (!_initialized)
             return;
 
-        SceneScale.ScaleX = _sceneZoom;
-        SceneScale.ScaleY = _sceneZoom;
+        _sceneScale.ScaleX = _sceneZoom;
+        _sceneScale.ScaleY = _sceneZoom;
         SceneZoomLabel.Text = $"{_sceneZoom * 100:0}%";
         _syncingSceneZoomSlider = true;
         try { SceneZoomSlider.Value = _sceneZoom * 100.0; }
         finally { _syncingSceneZoomSlider = false; }
     }
 
-    private void SceneZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void SceneZoomSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         if (_syncingSceneZoomSlider) return;
         SetSceneZoom(e.NewValue / 100.0);
     }
 
-    private void ImageCompareZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void ImageCompareZoomSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         if (_syncingCompareZoomSlider) return;
         _compareFitToWindow = false;
         SetCompareZoom(e.NewValue / 100.0);
     }
 
-    private void SceneDiagnosticsToggle_Changed(object sender, RoutedEventArgs e)
+    private void SceneDiagnosticsToggle_Changed(object? sender, RoutedEventArgs e)
     {
         if (SceneDiagnosticsToggle.IsChecked != true)
         {
-            SceneDiagnosticsText.Visibility = Visibility.Collapsed;
+            SceneDiagnosticsText.IsVisible = false;
             return;
         }
         if (_vfs is null || _selectedNode is null)
@@ -2322,7 +2451,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Find the folder's `<name>.xrc` — same discovery LoadScene uses — and diagnose it.
+        // Find the folder's `<name>.xrc` -- same discovery LoadScene uses -- and diagnose it.
         FsNode folder = _selectedNode;
         FsNode? xrc = folder.Children.FirstOrDefault(c =>
             (c.NodeType & FsNodeType.File) != 0 &&
@@ -2330,7 +2459,7 @@ public partial class MainWindow : Window
         if (xrc is null)
         {
             SceneDiagnosticsText.Text = "This folder has no scene XRC to diagnose.";
-            SceneDiagnosticsText.Visibility = Visibility.Visible;
+            SceneDiagnosticsText.IsVisible = true;
             return;
         }
 
@@ -2339,12 +2468,12 @@ public partial class MainWindow : Window
             using Stream stream = _vfs.OpenFile(xrc);
             XrcSceneModel.SceneDiagnostics diag = XrcSceneModel.Diagnose(stream);
             SceneDiagnosticsText.Text = FormatSceneDiagnosticsInline(folder.GetPath(), diag);
-            SceneDiagnosticsText.Visibility = Visibility.Visible;
+            SceneDiagnosticsText.IsVisible = true;
         }
         catch (Exception ex)
         {
             SceneDiagnosticsText.Text = $"Diagnostics failed: {ex.Message}";
-            SceneDiagnosticsText.Visibility = Visibility.Visible;
+            SceneDiagnosticsText.IsVisible = true;
         }
     }
 
@@ -2365,28 +2494,28 @@ public partial class MainWindow : Window
         sb.AppendLine($"Enable calls: {diag.ItemEnableCalls.Count}");
         foreach (XrcSceneModel.ItemEnableCall call in diag.ItemEnableCalls)
         {
-            sb.AppendLine($"  {call.ScriptName,-20} → {call.TargetName,-20} enable={call.EnableValue}");
+            sb.AppendLine($"  {call.ScriptName,-20} -> {call.TargetName,-20} enable={call.EnableValue}");
         }
         return sb.ToString();
     }
 
-    private void SceneZoomIn_Click(object sender, RoutedEventArgs e) => SetSceneZoom(_sceneZoom * 1.25);
+    private void SceneZoomIn_Click(object? sender, RoutedEventArgs e) => SetSceneZoom(_sceneZoom * 1.25);
 
-    private void SceneZoomOut_Click(object sender, RoutedEventArgs e) => SetSceneZoom(_sceneZoom / 1.25);
+    private void SceneZoomOut_Click(object? sender, RoutedEventArgs e) => SetSceneZoom(_sceneZoom / 1.25);
 
-    private void SceneResetZoom_Click(object sender, RoutedEventArgs e) => SetSceneZoom(ComputeSceneDefaultZoom());
+    private void SceneResetZoom_Click(object? sender, RoutedEventArgs e) => SetSceneZoom(ComputeSceneDefaultZoom());
 
     /// <summary>
     /// Default scene zoom: fit the composed scene inside the ScrollViewer viewport on both axes,
-    /// capped at 8× so a small backdrop doesn't blow up to fill the panel. Falls back to 1× when the
+    /// capped at 8x so a small backdrop doesn't blow up to fill the panel. Falls back to 1x when the
     /// viewport hasn't laid out yet or the scene has no size.
     /// </summary>
     private double ComputeSceneDefaultZoom()
     {
         double w = SceneCanvas.Width;
         double h = SceneCanvas.Height;
-        double vpW = SceneScrollViewer.ActualWidth;
-        double vpH = SceneScrollViewer.ActualHeight;
+        double vpW = SceneScrollViewer.Bounds.Width;
+        double vpH = SceneScrollViewer.Bounds.Height;
         if (w <= 0 || h <= 0 || vpW <= 0 || vpH <= 0)
             return 1.0;
 
@@ -2394,13 +2523,48 @@ public partial class MainWindow : Window
         return Math.Min(fit, 8.0);
     }
 
-    private void SceneScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    private void SceneScrollViewer_PreviewPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
         if (SceneBaseImage.Source is null)
             return;
 
         e.Handled = true;
-        SetSceneZoom(e.Delta > 0 ? _sceneZoom * 1.25 : _sceneZoom / 1.25);
+        SetSceneZoom(e.Delta.Y > 0 ? _sceneZoom * 1.25 : _sceneZoom / 1.25);
+    }
+
+    // Click-drag pan mirrors the ImagePanel viewer: capture the pointer + starting offsets on press,
+    // update Offset in Moved by the delta, release on up. Reuses _panStart/_panStartH/VOffset since the
+    // Image and Scene panels are never visible simultaneously.
+    private void SceneScrollViewer_PointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (SceneBaseImage.Source is null)
+            return;
+        if (e.GetCurrentPoint(SceneScrollViewer).Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed)
+            return;
+
+        _panStart = e.GetPosition(SceneScrollViewer);
+        _panStartHOffset = SceneScrollViewer.Offset.X;
+        _panStartVOffset = SceneScrollViewer.Offset.Y;
+        e.Pointer.Capture(SceneScrollViewer);
+        SceneScrollViewer.Cursor = new Cursor(StandardCursorType.SizeAll);
+    }
+
+    private void SceneScrollViewer_PointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_panStart is not { } start || !e.GetCurrentPoint(SceneScrollViewer).Properties.IsLeftButtonPressed)
+            return;
+
+        Point pos = e.GetPosition(SceneScrollViewer);
+        SceneScrollViewer.Offset = new Vector(
+            _panStartHOffset - (pos.X - start.X),
+            _panStartVOffset - (pos.Y - start.Y));
+    }
+
+    private void SceneScrollViewer_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _panStart = null;
+        e.Pointer.Capture(null);
+        SceneScrollViewer.Cursor = Cursor.Default;
     }
 
     // ---------------------------------------------------------------------
@@ -2409,8 +2573,8 @@ public partial class MainWindow : Window
 
     private void ShowModel(ModelResource model)
     {
-        ModelPanel.Visibility = Visibility.Visible;
-        ModelCompareToggle.Visibility = _selectedNode is { HasMod: true } ? Visibility.Visible : Visibility.Collapsed;
+        ModelPanel.IsVisible = true;
+        ModelCompareToggle.IsVisible = _selectedNode is { HasMod: true };
 
         try
         {
@@ -2418,8 +2582,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ModelPanel.Visibility = Visibility.Collapsed;
-            MessageBox.Show(this, $"Failed to display model:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            ModelPanel.IsVisible = false;
+            _ = Dialogs.ShowMessageBox(this, $"Failed to display model:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2456,12 +2620,12 @@ public partial class MainWindow : Window
         if (defaultAnimation is not null)
         {
             ApplyAnimationSelection(defaultAnimation, autoPlay: true);
-            ModelNoAnimationNote.Visibility = Visibility.Collapsed;
+            ModelNoAnimationNote.IsVisible = false;
         }
         else
         {
             ModelViewerHost.LoadAnimation(null);
-            ModelNoAnimationNote.Visibility = Visibility.Visible;
+            ModelNoAnimationNote.IsVisible = true;
         }
     }
 
@@ -2485,7 +2649,7 @@ public partial class MainWindow : Window
 
     private static readonly ModelPickItem NoneItem = new("(none)", null);
 
-    private void ModelIncludeWholeInstall_Changed(object sender, RoutedEventArgs e) => RefreshModelCombos();
+    private void ModelIncludeWholeInstall_Changed(object? sender, RoutedEventArgs e) => RefreshModelCombos();
 
     private void RefreshModelCombos()
     {
@@ -2517,7 +2681,7 @@ public partial class MainWindow : Window
             SkinSelectorCombo.ItemsSource = skinItems;
             // Prefer the first REAL skin over "(none)" so a freshly-loaded model shows textured out of
             // the box. Falls back to "(none)" when no .tm sits next to the model. Skin choice still
-            // doesn't persist across model changes on purpose — each model is reset to its own default.
+            // doesn't persist across model changes on purpose -- each model is reset to its own default.
             ModelPickItem defaultSkinItem = skinItems.FirstOrDefault(i => i.Node is not null) ?? skinItems[0];
             SkinSelectorCombo.SelectedItem = defaultSkinItem;
 
@@ -2555,7 +2719,7 @@ public partial class MainWindow : Window
             .Where(f => extensions.Contains(Path.GetExtension(f.Name), StringComparer.OrdinalIgnoreCase));
     }
 
-    private void ModelSelectorCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private void ModelSelectorCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_updatingModelCombos || _vfs is null)
             return;
@@ -2571,11 +2735,11 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to load model:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            _ = Dialogs.ShowMessageBox(this, $"Failed to load model:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void AnimationSelectorCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private void AnimationSelectorCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_updatingModelCombos)
             return;
@@ -2584,7 +2748,7 @@ public partial class MainWindow : Window
             return;
 
         ApplyAnimationSelection(item.Node, autoPlay: true);
-        ModelNoAnimationNote.Visibility = Visibility.Collapsed;
+        ModelNoAnimationNote.IsVisible = false;
     }
 
     /// <summary>Decodes (if <paramref name="node"/> is non-null) and loads an animation into the viewer, optionally auto-playing it -- shared by the initial default-animation auto-discovery and the Animation combo's selection handler.</summary>
@@ -2594,7 +2758,7 @@ public partial class MainWindow : Window
 
         // The "Source" button reveals the ani's decoded structure. Hide it when no animation is loaded
         // (nothing to reveal); show it otherwise, regardless of how the model was opened.
-        ViewAniSourceButton.Visibility = node is not null ? Visibility.Visible : Visibility.Collapsed;
+        ViewAniSourceButton.IsVisible = node is not null;
 
         if (node is null || _vfs is null)
         {
@@ -2612,11 +2776,11 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Failed to load animation:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            _ = Dialogs.ShowMessageBox(this, $"Failed to load animation:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void SkinSelectorCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private void SkinSelectorCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_updatingModelCombos || _vfs is null || _currentModel is null || _currentModelNode is null)
             return;
@@ -2697,24 +2861,24 @@ public partial class MainWindow : Window
     // Animation playback transport
     // ---------------------------------------------------------------------
 
-    private void ModelOrthoView_Click(object sender, RoutedEventArgs e)
+    private void ModelOrthoView_Click(object? sender, RoutedEventArgs e)
     {
-        if (sender is not System.Windows.Controls.Button { Tag: string tag })
+        if (sender is not Button { Tag: string tag })
             return;
-        if (!Enum.TryParse<Views.GlModelViewerHost.ViewDirection>(tag, out var direction))
+        if (!Enum.TryParse<GlModelViewerHost.ViewDirection>(tag, out var direction))
             return;
         ModelViewerHost.SetOrthographicView(direction);
     }
 
-    private void ModelResetView_Click(object sender, RoutedEventArgs e) => ModelViewerHost.ResetView();
+    private void ModelResetView_Click(object? sender, RoutedEventArgs e) => ModelViewerHost.ResetView();
 
     /// <summary>
     /// Swaps to the text panel showing the currently-selected animation's decoded structure (bone tracks
-    /// and keyframes) — the raw view we used to open by default when a user clicked an .ani. Storing the
+    /// and keyframes) -- the raw view we used to open by default when a user clicked an .ani. Storing the
     /// owning model node lets <see cref="BackToModel_Click"/> restore the exact model-plus-animation
     /// context the user came from.
     /// </summary>
-    private void ViewAniSource_Click(object sender, RoutedEventArgs e)
+    private void ViewAniSource_Click(object? sender, RoutedEventArgs e)
     {
         if (_vfs is null || _currentAnimationNode is null || _currentModelNode is null)
             return;
@@ -2745,18 +2909,18 @@ public partial class MainWindow : Window
 
             ClearContentPanels();
             TextPanel.Text = header + AniDecoder.DumpAsText(animation);
-            TextViewer.Visibility = Visibility.Visible;
-            AniSourceHeader.Visibility = Visibility.Visible;
+            TextViewer.IsVisible = true;
+            AniSourceHeader.IsVisible = true;
             AniSourceHeaderLabel.Text = $"ANI: {_currentAnimationNode.Name}";
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not decode animation source:\n{ex.Message}",
+            _ = Dialogs.ShowMessageBox(this, $"Could not decode animation source:\n{ex.Message}",
                 "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
-    private void BackToModel_Click(object sender, RoutedEventArgs e)
+    private void BackToModel_Click(object? sender, RoutedEventArgs e)
     {
         if (_aniSourceReturnAni is not null && _aniSourceReturnModel is not null)
         {
@@ -2774,7 +2938,7 @@ public partial class MainWindow : Window
     private FsNode? _aniSourceReturnAni;
     private FsNode? _aniSourceReturnModel;
 
-    private void ModelCompareToggle_Changed(object sender, RoutedEventArgs e)
+    private void ModelCompareToggle_Changed(object? sender, RoutedEventArgs e)
     {
         if (_selectedNode is null || !_selectedNode.HasMod)
             return;
@@ -2784,16 +2948,16 @@ public partial class MainWindow : Window
         LoadSelectedResource(_selectedNode, variant);
     }
 
-    private void ModelWireframe_Changed(object sender, RoutedEventArgs e)
+    private void ModelWireframe_Changed(object? sender, RoutedEventArgs e)
     {
         _settings.ModelViewerWireframe = ModelWireframeCheck.IsChecked == true;
         _settings.Save();
         ModelViewerHost.ShowWireframe = _settings.ModelViewerWireframe;
     }
 
-    private void ModelBackground_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private void ModelBackground_Changed(object? sender, SelectionChangedEventArgs e)
     {
-        if (ModelBackgroundCombo.SelectedItem is not System.Windows.Controls.ComboBoxItem item)
+        if (ModelBackgroundCombo.SelectedItem is not ComboBoxItem item)
             return;
         string preset = item.Tag as string ?? "Dark";
         _settings.ModelViewerBackground = preset;
@@ -2812,12 +2976,12 @@ public partial class MainWindow : Window
         ModelViewerHost.ClearColor = color;
     }
 
-    private void ModelSavePng_Click(object sender, RoutedEventArgs e)
+    private async void ModelSavePng_Click(object? sender, RoutedEventArgs e)
     {
         byte[]? pixels = ModelViewerHost.RenderCurrentFrameToBytes(out int w, out int h);
         if (pixels is null)
         {
-            MessageBox.Show(this, "Load a model first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
+            await Dialogs.ShowMessageBox(this, "Load a model first.", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -2825,32 +2989,25 @@ public partial class MainWindow : Window
             ? Path.GetFileNameWithoutExtension(_currentModelNode.Name)
             : "screenshot";
 
-        var dialog = new SaveFileDialog
-        {
-            Title = "Save PNG",
-            Filter = "PNG image (*.png)|*.png",
-            FileName = SanitizeFileName(defaultStem) + ".png",
-        };
-        ApplyRememberedExportFolder(dialog);
-        if (dialog.ShowDialog(this) != true)
+        string? path = await Dialogs.ShowSaveFileDialog(
+            this, "Save PNG", SanitizeFileName(defaultStem) + ".png",
+            [new Avalonia.Platform.Storage.FilePickerFileType("PNG image") { Patterns = ["*.png"] }],
+            _settings.LastExportDir);
+        if (path is null)
             return;
 
         try
         {
-            var bitmap = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, pixels, w * 4);
-            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(bitmap));
-            using var outFile = File.Create(dialog.FileName);
-            encoder.Save(outFile);
-            RememberExportFolder(dialog.FileName);
+            PngWriter.Write(new DecodedImage(w, h, pixels), path);
+            RememberExportFolder(path);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Save failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            await Dialogs.ShowMessageBox(this, $"Save failed:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void ModelPlayPauseButton_Click(object sender, RoutedEventArgs e)
+    private void ModelPlayPauseButton_Click(object? sender, RoutedEventArgs e)
     {
         if (ModelViewerHost.IsPlaying)
         {
@@ -2862,15 +3019,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ModelLoopCheck_Changed(object sender, RoutedEventArgs e) =>
+    private void ModelLoopCheck_Changed(object? sender, RoutedEventArgs e) =>
         ModelViewerHost.Loop = ModelLoopCheck.IsChecked == true;
 
-    private void ModelScrubSlider_DragStarted(object sender, DragStartedEventArgs e)
-    {
-        _modelSliderDragging = true;
-    }
+    private void ModelScrubSlider_PointerPressed(object? sender, PointerPressedEventArgs e) => _modelSliderDragging = true;
 
-    private void ModelScrubSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void ModelScrubSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         if (!_modelSliderDragging)
             return;
@@ -2878,14 +3032,11 @@ public partial class MainWindow : Window
         ModelViewerHost.SeekToFraction((float)e.NewValue);
     }
 
-    private void ModelScrubSlider_DragCompleted(object sender, DragCompletedEventArgs e)
-    {
-        _modelSliderDragging = false;
-    }
+    private void ModelScrubSlider_PointerReleased(object? sender, PointerReleasedEventArgs e) => _modelSliderDragging = false;
 
     private void ModelPlaybackTimer_Tick(object? sender, EventArgs e)
     {
-        if (ModelPanel.Visibility != Visibility.Visible)
+        if (!ModelPanel.IsVisible)
             return;
 
         ModelPlayPauseButton.Content = ModelViewerHost.IsPlaying ? "Pause" : "Play";
@@ -2908,10 +3059,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ImageCompareEnter_Click(object sender, RoutedEventArgs e)
+    private void ImageCompareEnter_Click(object? sender, RoutedEventArgs e)
     {
         if (_selectedNode is { HasMod: true } node)
-            ShowCompareView(node);
+            _ = ShowCompareView(node);
     }
 
     private void ShowImages(IReadOnlyList<(string Name, DecodedImage Image)> images)
@@ -2921,26 +3072,26 @@ public partial class MainWindow : Window
         // Mirror the sound/model panels: show the A/B "Compare Mod" affordance whenever the current file
         // has a modded override. Users shouldn't have to right-click the tree to discover the compare
         // view exists.
-        ImageCompareEnterButton.Visibility = _selectedNode is { HasMod: true } ? Visibility.Visible : Visibility.Collapsed;
+        ImageCompareEnterButton.IsVisible = _selectedNode is { HasMod: true };
 
         if (_currentImages.Count > 1)
         {
-            ImageSelector.Visibility = Visibility.Visible;
+            ImageSelector.IsVisible = true;
             ImageSelector.ItemsSource = _currentImages.Select((entry, index) =>
                 string.IsNullOrEmpty(entry.Name) ? $"[{index}]" : entry.Name).ToList();
             ImageSelector.SelectedIndex = 0;
         }
         else
         {
-            ImageSelector.Visibility = Visibility.Collapsed;
+            ImageSelector.IsVisible = false;
             if (_currentImages.Count == 1)
                 SetPreviewImage(_currentImages[0].Image);
         }
 
-        ImagePanel.Visibility = Visibility.Visible;
+        ImagePanel.IsVisible = true;
     }
 
-    private void ImageSelector_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    private void ImageSelector_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         int index = ImageSelector.SelectedIndex;
         if (index >= 0 && index < _currentImages.Count)
@@ -2952,22 +3103,17 @@ public partial class MainWindow : Window
     private void SetPreviewImage(DecodedImage image)
     {
         _currentDisplayedImage = image;
-        PreviewImage.Source = ToBitmapSource(image);
-        ImageScrollViewer.ScrollToHorizontalOffset(0);
-        ImageScrollViewer.ScrollToVerticalOffset(0);
+        PreviewImage.Source = ToBitmap(image);
+        ImageScrollViewer.Offset = new Vector(0, 0);
         ApplyDefaultZoom(image);
     }
 
-    private static BitmapSource? ToBitmapSource(DecodedImage image)
+    private static Bitmap? ToBitmap(DecodedImage image)
     {
         if (image.Width <= 0 || image.Height <= 0)
             return null;
 
-        int stride = image.Width * 4;
-        var bitmap = BitmapSource.Create(
-            image.Width, image.Height, 96, 96, PixelFormats.Bgra32, null, image.Pixels, stride);
-        bitmap.Freeze();
-        return bitmap;
+        return PngWriter.ToBitmap(image);
     }
 
     // ---------------------------------------------------------------------
@@ -2982,20 +3128,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        // "Fit to window, but never more than 8×": compute the largest zoom that keeps the image inside
-        // the viewport on both axes, cap at 8× so tiny inventory icons don't blow up to fill the panel.
-        // On first load the ScrollViewer hasn't laid out yet (ActualWidth == 0) — in that case defer
+        // "Fit to window, but never more than 8x": compute the largest zoom that keeps the image inside
+        // the viewport on both axes, cap at 8x so tiny inventory icons don't blow up to fill the panel.
+        // On first load the ScrollViewer hasn't laid out yet (Bounds is empty) -- in that case defer
         // to the next dispatcher tick so we compute against real dimensions rather than falling back
         // to 100% and cropping a large image.
-        double vpW = ImageScrollViewer.ActualWidth;
-        double vpH = ImageScrollViewer.ActualHeight;
+        double vpW = ImageScrollViewer.Bounds.Width;
+        double vpH = ImageScrollViewer.Bounds.Height;
         if (vpW <= 0 || vpH <= 0)
         {
-            Dispatcher.BeginInvoke(new Action(() =>
+            Dispatcher.UIThread.Post(() =>
             {
-                if (_currentDisplayedImage is DecodedImage current && ReferenceEquals(current, image))
+                if (_currentDisplayedImage is { } current && ReferenceEquals(current, image))
                     ApplyDefaultZoom(image);
-            }), System.Windows.Threading.DispatcherPriority.Loaded);
+            }, DispatcherPriority.Loaded);
             return;
         }
 
@@ -3005,7 +3151,7 @@ public partial class MainWindow : Window
         _imageFitToWindow = true;
     }
 
-    private void ImageScrollViewer_SizeChanged(object sender, SizeChangedEventArgs e)
+    private void ImageScrollViewer_SizeChanged(object? sender, SizeChangedEventArgs e)
     {
         if (_imageFitToWindow && _currentDisplayedImage is { } image)
             ApplyDefaultZoom(image);
@@ -3018,88 +3164,91 @@ public partial class MainWindow : Window
         _imageZoom = Math.Clamp(zoom, MinZoom, MaxZoom);
 
         // The slider raises ValueChanged during InitializeComponent, before the named XAML fields have
-        // been assigned. IsInitialized flips to true only after the XAML tree is fully wired up; bail
-        // out until then. The first real SetZoom call arrives via ApplyDefaultZoom after an image loads.
-        if (!IsInitialized)
+        // been assigned. _initialized flips true only after the constructor finishes; bail out until
+        // then. The first real SetZoom call arrives via ApplyDefaultZoom after an image loads.
+        if (!_initialized)
             return;
 
-        ImageScale.ScaleX = _imageZoom;
-        ImageScale.ScaleY = _imageZoom;
+        _imageScale.ScaleX = _imageZoom;
+        _imageScale.ScaleY = _imageZoom;
         ZoomLabel.Text = $"{_imageZoom * 100:0}%";
         _syncingImageZoomSlider = true;
         try { ImageZoomSlider.Value = _imageZoom * 100.0; }
         finally { _syncingImageZoomSlider = false; }
     }
 
-    private void ImageZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void ImageZoomSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
         if (_syncingImageZoomSlider) return;
         _imageFitToWindow = false;
         SetZoom(e.NewValue / 100.0);
     }
 
-    private void ZoomIn_Click(object sender, RoutedEventArgs e)
+    private void ZoomIn_Click(object? sender, RoutedEventArgs e)
     {
         _imageFitToWindow = false;
         SetZoom(_imageZoom * 1.25);
     }
 
-    private void ZoomOut_Click(object sender, RoutedEventArgs e)
+    private void ZoomOut_Click(object? sender, RoutedEventArgs e)
     {
         _imageFitToWindow = false;
         SetZoom(_imageZoom / 1.25);
     }
 
-    private void ResetZoom_Click(object sender, RoutedEventArgs e)
+    private void ResetZoom_Click(object? sender, RoutedEventArgs e)
     {
         if (_currentDisplayedImage is { } image)
             ApplyDefaultZoom(image);
     }
 
-    private void ImageScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    private void ImageScrollViewer_PreviewPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
         if (PreviewImage.Source is null)
             return;
 
         e.Handled = true;
         _imageFitToWindow = false;
-        SetZoom(e.Delta > 0 ? _imageZoom * 1.25 : _imageZoom / 1.25);
+        SetZoom(e.Delta.Y > 0 ? _imageZoom * 1.25 : _imageZoom / 1.25);
     }
 
-    private void ImageScrollViewer_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    private void ImageScrollViewer_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
         if (PreviewImage.Source is null)
             return;
+        if (e.GetCurrentPoint(ImageScrollViewer).Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed)
+            return;
 
         _panStart = e.GetPosition(ImageScrollViewer);
-        _panStartHOffset = ImageScrollViewer.HorizontalOffset;
-        _panStartVOffset = ImageScrollViewer.VerticalOffset;
-        ImageScrollViewer.CaptureMouse();
-        Mouse.OverrideCursor = Cursors.SizeAll;
+        _panStartHOffset = ImageScrollViewer.Offset.X;
+        _panStartVOffset = ImageScrollViewer.Offset.Y;
+        e.Pointer.Capture(ImageScrollViewer);
+        ImageScrollViewer.Cursor = new Cursor(StandardCursorType.SizeAll);
     }
 
-    private void ImageScrollViewer_MouseMove(object sender, MouseEventArgs e)
+    private void ImageScrollViewer_PointerMoved(object? sender, PointerEventArgs e)
     {
-        if (_panStart is not { } start || e.LeftButton != MouseButtonState.Pressed)
+        if (_panStart is not { } start || !e.GetCurrentPoint(ImageScrollViewer).Properties.IsLeftButtonPressed)
             return;
 
         Point pos = e.GetPosition(ImageScrollViewer);
-        ImageScrollViewer.ScrollToHorizontalOffset(_panStartHOffset - (pos.X - start.X));
-        ImageScrollViewer.ScrollToVerticalOffset(_panStartVOffset - (pos.Y - start.Y));
+        ImageScrollViewer.Offset = new Vector(
+            _panStartHOffset - (pos.X - start.X),
+            _panStartVOffset - (pos.Y - start.Y));
     }
 
-    private void ImageScrollViewer_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    private void ImageScrollViewer_PointerReleased(object? sender, PointerReleasedEventArgs e)
     {
         _panStart = null;
-        ImageScrollViewer.ReleaseMouseCapture();
-        Mouse.OverrideCursor = null;
+        e.Pointer.Capture(null);
+        ImageScrollViewer.Cursor = Cursor.Default;
     }
 
     // ---------------------------------------------------------------------
-    // Sound playback (ResourceLoader always hands us a WAV file for WPF's MediaPlayer)
+    // Sound playback
     // ---------------------------------------------------------------------
 
-    private void SoundCompareToggle_Changed(object sender, RoutedEventArgs e)
+    private void SoundCompareToggle_Changed(object? sender, RoutedEventArgs e)
     {
         if (_selectedNode is null || !_selectedNode.HasMod)
             return;
@@ -3116,11 +3265,11 @@ public partial class MainWindow : Window
         if (subtitleText is not null)
         {
             SubtitleText.Text = subtitleText;
-            SubtitleText.Visibility = Visibility.Visible;
+            SubtitleText.IsVisible = true;
         }
         else
         {
-            SubtitleText.Visibility = Visibility.Collapsed;
+            SubtitleText.IsVisible = false;
         }
 
         SoundSlider.Value = 0;
@@ -3130,13 +3279,12 @@ public partial class MainWindow : Window
         SetPlayPauseIcon(playing: false);
         // Show the A/B toggle whenever the current selection has a mod override; keep its state in sync
         // with whichever variant is currently loaded.
-        SoundCompareToggle.Visibility = _selectedNode is { HasMod: true } ? Visibility.Visible : Visibility.Collapsed;
-        _mediaPlayer.Open(new Uri(sound.TempFilePath));
+        SoundCompareToggle.IsVisible = _selectedNode is { HasMod: true };
+        _mediaPlayer.Open(sound.TempFilePath);
 
         // Render the waveform strip. The audio decode happens off-thread so a big WAV doesn't stall the
-        // click; the actual DrawingImage is built on the UI thread because Freezables bind to whichever
-        // dispatcher they're created on and touching them off-thread throws. Peaks are cached against
-        // the sound instance so window resizes re-render cheaply without re-decoding the file.
+        // click; the actual DrawingImage is built on the UI thread. Peaks are cached against the sound
+        // instance so window resizes re-render cheaply without re-decoding the file.
         _cachedWaveformPeaks = null;
         _cachedWaveformSource = sound;
         WaveformImage.Source = null;
@@ -3159,7 +3307,7 @@ public partial class MainWindow : Window
                 }
             }, TaskScheduler.FromCurrentSynchronizationContext());
 
-        SoundPanel.Visibility = Visibility.Visible;
+        SoundPanel.IsVisible = true;
 
         if (_settings.AutoPlaySound)
             PlaySound();
@@ -3167,7 +3315,7 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Renders the cached peak buffer at a bar count sized to the panel's current width. Called on
-    /// initial peak sample and on every WaveformImage SizeChanged so bar density stays uniform (≈ one
+    /// initial peak sample and on every WaveformImage SizeChanged so bar density stays uniform (about one
     /// bar per <see cref="WaveformPixelsPerBar"/> pixels) regardless of window size.
     /// </summary>
     private void RenderWaveformAtCurrentWidth()
@@ -3175,9 +3323,9 @@ public partial class MainWindow : Window
         if (_cachedWaveformPeaks is null || _cachedWaveformPeaks.Length == 0)
             return;
 
-        double width = WaveformImage.ActualWidth;
+        double width = WaveformImage.Bounds.Width;
         if (width < 1)
-            width = SoundPanel.ActualWidth;
+            width = SoundPanel.Bounds.Width;
         if (width < 1)
             return;
 
@@ -3192,9 +3340,9 @@ public partial class MainWindow : Window
     }
 
     private const double WaveformPixelsPerBar = 4.0;
-    private static readonly System.Windows.Media.Color WaveformColor = System.Windows.Media.Color.FromRgb(0xE8, 0xEC, 0xF4);
+    private static readonly Color WaveformColor = Color.FromRgb(0xE8, 0xEC, 0xF4);
 
-    private void WaveformImage_SizeChanged(object sender, SizeChangedEventArgs e)
+    private void WaveformImage_SizeChanged(object? sender, SizeChangedEventArgs e)
     {
         if (e.NewSize.Width != e.PreviousSize.Width)
             RenderWaveformAtCurrentWidth();
@@ -3217,7 +3365,7 @@ public partial class MainWindow : Window
     }
 
     private void SetPlayPauseIcon(bool playing) =>
-        PlayPauseIcon.Source = (System.Windows.Media.ImageSource)FindResource(playing ? "PauseIcon" : "PlayIcon");
+        PlayPauseIcon.Source = (IImage)Application.Current!.FindResource(playing ? "PauseIcon" : "PlayIcon")!;
 
     /// <summary>
     /// Formats an ExtendedInfo array into a two-line block for display: speaker name (or clip id) on
@@ -3242,25 +3390,32 @@ public partial class MainWindow : Window
     private void StopSound()
     {
         _positionTimer.Stop();
-        _mediaPlayer.Stop();
-        _mediaPlayer.Close();
+        // CloseAsync so a tree click that switches away from a currently-playing sound doesn't wait
+        // for LibVLC's synchronous Stop -- see LibVlcMediaPlayer.CloseAsync. Subsequent Open on a new
+        // sound races safely (LibVLC's own APIs are thread-safe).
+        _mediaPlayer.CloseAsync();
         WaveformImage.Source = null;
     }
 
     private void MediaPlayer_MediaEnded_SoundLoop(object? sender, EventArgs e)
     {
+        // Once LibVLC's native player reaches the Ended state, a plain Play() call is a silent no-op --
+        // it needs an explicit Stop() first to reset its internal state machine before it'll start again
+        // (the same thing the Stop button already does, which is why Stop-then-Play always worked while
+        // clicking Play directly after natural end-of-track did nothing). Stop() also resets Time to 0,
+        // but the explicit Position assignment below is kept for clarity/safety.
+        _mediaPlayer.Stop();
+        _mediaPlayer.Position = TimeSpan.Zero;
+
         if (_settings.LoopSoundPlayback)
         {
-            _mediaPlayer.Position = TimeSpan.Zero;
             _mediaPlayer.Play();
         }
         else
         {
-            // Rewind to the start so the next Play button click resumes from 0 instead of sitting at the
-            // final frame. Also snap the seek slider back and flip the transport icon to Play — the
-            // position timer stopped before it could push the final tick to the slider.
+            // Snap the seek slider back and flip the transport icon to Play -- the position timer
+            // stopped before it could push the final tick to the slider.
             _positionTimer.Stop();
-            _mediaPlayer.Position = TimeSpan.Zero;
             SoundSlider.Value = 0;
             SetPlayPauseIcon(playing: false);
             UpdateSoundTimeReadout();
@@ -3269,9 +3424,9 @@ public partial class MainWindow : Window
 
     private void MediaPlayer_MediaOpened(object? sender, EventArgs e)
     {
-        if (_mediaPlayer.NaturalDuration.HasTimeSpan)
+        if (_mediaPlayer.HasDurationTimeSpan)
         {
-            SoundSlider.Maximum = Math.Max(0.01, _mediaPlayer.NaturalDuration.TimeSpan.TotalSeconds);
+            SoundSlider.Maximum = Math.Max(0.01, _mediaPlayer.Duration!.Value.TotalSeconds);
         }
         UpdateSoundTimeReadout();
     }
@@ -3293,9 +3448,7 @@ public partial class MainWindow : Window
     private void UpdateSoundTimeReadout()
     {
         TimeSpan pos = _mediaPlayer.Position;
-        TimeSpan total = _mediaPlayer.NaturalDuration.HasTimeSpan
-            ? _mediaPlayer.NaturalDuration.TimeSpan
-            : TimeSpan.Zero;
+        TimeSpan total = _mediaPlayer.Duration ?? TimeSpan.Zero;
         SoundCurrentTimeText.Text = FormatSoundTime(pos);
         SoundTotalTimeText.Text = FormatSoundTime(total);
     }
@@ -3307,7 +3460,7 @@ public partial class MainWindow : Window
         return $"{t.Minutes}:{t.Seconds:00}";
     }
 
-    private void PlayPauseButton_Click(object sender, RoutedEventArgs e)
+    private void PlayPauseButton_Click(object? sender, RoutedEventArgs e)
     {
         if (_positionTimer.IsEnabled)
             PauseSound();
@@ -3315,7 +3468,7 @@ public partial class MainWindow : Window
             PlaySound();
     }
 
-    private void StopButton_Click(object sender, RoutedEventArgs e)
+    private void StopButton_Click(object? sender, RoutedEventArgs e)
     {
         _mediaPlayer.Stop();
         _positionTimer.Stop();
@@ -3324,10 +3477,9 @@ public partial class MainWindow : Window
         UpdateSoundTimeReadout();
     }
 
-    private void SoundSlider_DragStarted(object sender, System.Windows.Controls.Primitives.DragStartedEventArgs e) =>
-        _sliderDragging = true;
+    private void SoundSlider_PointerPressed(object? sender, PointerPressedEventArgs e) => _sliderDragging = true;
 
-    private void SoundSlider_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
+    private void SoundSlider_PointerReleased(object? sender, PointerReleasedEventArgs e)
     {
         _sliderDragging = false;
         _mediaPlayer.Position = TimeSpan.FromSeconds(SoundSlider.Value);
@@ -3335,7 +3487,7 @@ public partial class MainWindow : Window
     }
 
     // ---------------------------------------------------------------------
-    // Video: ffmpeg.exe transcodes to MP4 on demand for WPF's MediaElement
+    // Video: ffmpeg transcodes to MP4 on demand for the LibVLC-backed VideoView
     // ---------------------------------------------------------------------
 
     private int _videoLoadGeneration;
@@ -3352,15 +3504,15 @@ public partial class MainWindow : Window
 
     private async Task TranscodeAndPlayAsync(ExternalVideoResource video)
     {
-        VideoPanel.Visibility = Visibility.Visible;
+        VideoPanel.IsVisible = true;
         VideoLabel.Text = $"{video.Kind} video -- transcoding for playback...";
         VideoPlayPauseButton.IsEnabled = false;
-        VideoPlayer.Source = null;
+        _videoPlayer.CloseAsync();
 
-        if (!EnsureFfmpegAvailable())
+        if (!await EnsureFfmpegAvailable())
         {
-            VideoLabel.Text = $"{video.Kind} video -- ffmpeg.exe is required for playback.\n\n" +
-                              "Use Options > Locate ffmpeg.exe... to point at a downloaded copy.";
+            VideoLabel.Text = $"{video.Kind} video -- ffmpeg is required for playback.\n\n" +
+                              "Use Options > Locate ffmpeg... to point at a downloaded copy.";
             return;
         }
 
@@ -3368,7 +3520,10 @@ public partial class MainWindow : Window
         string ffmpegPath = _settings.FfmpegPath;
         string rawPath = video.TempFilePath;
         string? bgColor = _settings.RemoveVideoBackground ? _settings.VideoBackgroundColor : null;
-        string overlayColor = _settings.VideoOverlayColor;
+        // Overlay onto the actual current panel background so the chroma-keyed rectangle blends in
+        // rather than sitting on the hardcoded "202020" fallback (which no longer matches once the
+        // Fluent theme background differs -- e.g. light theme, or a slightly-different dark shade).
+        string overlayColor = ResolveOverlayColorFromBackground();
 
         TranscodeResult result = await Task.Run(() => FfmpegTranscoder.TranscodeToMp4(rawPath, ffmpegPath, _tempFiles, bgColor, overlayColor));
 
@@ -3382,23 +3537,136 @@ public partial class MainWindow : Window
         }
 
         VideoLabel.Text = $"{video.Kind} video";
-        VideoPlayer.Source = new Uri(result.OutputPath!);
+        // Belt-and-braces: re-bind here just before playback. The initial bind in CreateVideoPlayer runs
+        // during warm-up while VideoPanel is still hidden; if for any reason the VideoView's native child
+        // window wasn't ready then, Play() would fall back to a separate "VLC (Direct3D11 output)" window.
+        // Re-assigning at this point (post-await, panel visible and laid out) guarantees the HWND is set.
+        VideoPlayer.MediaPlayer = _videoPlayer.NativePlayer;
+
+        // Reset the transport UI. Duration is unknown until LibVLC's LengthChanged event fires
+        // (see VideoPlayer_MediaOpened) -- until then, seek is disabled and the totals read "--:--".
+        _videoDurationKnown = false;
+        _videoSliderDragging = false;
+        VideoScrubSlider.IsEnabled = false;
+        VideoScrubSlider.Maximum = 1;
+        VideoScrubSlider.Value = 0;
+        VideoCurrentTimeText.Text = "0:00";
+        VideoTotalTimeText.Text = "--:--";
+
+        _videoPlayer.Open(result.OutputPath!);
         if (_settings.AutoPlayVideo)
         {
-            VideoPlayer.Play();
+            _videoPlayer.Play();
             _videoIsPlaying = true;
-            VideoPlayPauseButton.Content = "Pause";
+            SetVideoPlayPauseIcon(playing: true);
+            _videoPositionTimer.Start();
         }
         else
         {
-            VideoPlayer.Pause();
             _videoIsPlaying = false;
-            VideoPlayPauseButton.Content = "Play";
+            SetVideoPlayPauseIcon(playing: false);
         }
         VideoPlayPauseButton.IsEnabled = true;
     }
 
-    private void RemoveBackground_Changed(object sender, RoutedEventArgs e)
+    private void SetVideoPlayPauseIcon(bool playing) =>
+        VideoPlayPauseIcon.Source = (IImage)Application.Current!.FindResource(playing ? "PauseIcon" : "PlayIcon")!;
+
+    private void VideoPlayer_MediaOpened(object? sender, EventArgs e)
+    {
+        if (!_videoPlayer.HasDurationTimeSpan)
+            return;
+
+        _videoDurationKnown = true;
+        double seconds = _videoPlayer.Duration!.Value.TotalSeconds;
+        VideoScrubSlider.Maximum = Math.Max(0.01, seconds);
+        VideoScrubSlider.IsEnabled = true;
+        UpdateVideoTimeReadout();
+    }
+
+    private void VideoPositionTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_videoSliderDragging && _videoDurationKnown)
+            VideoScrubSlider.Value = _videoPlayer.Position.TotalSeconds;
+        UpdateVideoTimeReadout();
+    }
+
+    private void UpdateVideoTimeReadout()
+    {
+        VideoCurrentTimeText.Text = FormatSoundTime(_videoPlayer.Position);
+        VideoTotalTimeText.Text = _videoDurationKnown
+            ? FormatSoundTime(_videoPlayer.Duration ?? TimeSpan.Zero)
+            : "--:--";
+    }
+
+    private void VideoScrubSlider_PointerPressed(object? sender, PointerPressedEventArgs e) => _videoSliderDragging = true;
+
+    private void VideoScrubSlider_PointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _videoSliderDragging = false;
+        if (_videoDurationKnown)
+            _videoPlayer.Position = TimeSpan.FromSeconds(VideoScrubSlider.Value);
+    }
+
+    private void VideoScrubSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        // Keep the current-time readout in sync while the user drags the thumb, even though playback
+        // position doesn't change until pointer-release. Guard on drag state so timer-driven writes
+        // (which come from _videoPlayer.Position directly) don't trigger a redundant readout refresh.
+        if (_videoSliderDragging)
+            VideoCurrentTimeText.Text = FormatSoundTime(TimeSpan.FromSeconds(VideoScrubSlider.Value));
+    }
+
+    private void VideoStopButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_currentVideo is null)
+            return;
+        _videoPlayer.Stop();
+        _videoPlayer.Position = TimeSpan.Zero;
+        _videoPositionTimer.Stop();
+        _videoIsPlaying = false;
+        VideoScrubSlider.Value = 0;
+        SetVideoPlayPauseIcon(playing: false);
+        UpdateVideoTimeReadout();
+    }
+
+    /// <summary>
+    /// Returns the app's actual panel background as a 6-hex-digit RRGGBB string suitable for ffmpeg's
+    /// <c>color=c=0x...</c> source. Reads Window.Background (which resolves to the Fluent theme brush
+    /// unless overridden), falls back to the setting-configured overlay color when the background isn't
+    /// a plain SolidColorBrush (e.g. custom gradient) so we still produce something usable.
+    /// </summary>
+    private string ResolveOverlayColorFromBackground()
+    {
+        if (Background is SolidColorBrush { Color: var c })
+            return $"{c.R:X2}{c.G:X2}{c.B:X2}";
+
+        // Try the closest ancestor of VideoPanel that has a solid background.
+        for (var v = (Visual?)VideoPanel; v is not null; v = v.GetVisualParent())
+        {
+            IBrush? bg = v switch
+            {
+                Panel p => p.Background,
+                Border b => b.Background,
+                TemplatedControl tc => tc.Background,
+                _ => null,
+            };
+            if (bg is SolidColorBrush { Color: var cc })
+                return $"{cc.R:X2}{cc.G:X2}{cc.B:X2}";
+        }
+
+        // Last resort: the theme brush Fluent uses for the app-shell background.
+        if (Application.Current?.TryGetResource("SolidBackgroundFillColorBaseBrush",
+                Application.Current.ActualThemeVariant, out object? resource) == true
+            && resource is SolidColorBrush { Color: var themeColor })
+        {
+            return $"{themeColor.R:X2}{themeColor.G:X2}{themeColor.B:X2}";
+        }
+
+        return _settings.VideoOverlayColor;
+    }
+
+    private void RemoveBackground_Changed(object? sender, RoutedEventArgs e)
     {
         _settings.RemoveVideoBackground = RemoveBackgroundCheck.IsChecked == true;
         _settings.Save();
@@ -3406,21 +3674,28 @@ public partial class MainWindow : Window
             _ = TranscodeAndPlayAsync(_currentVideo);
     }
 
-    private void VideoZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    // Base "100% zoom" video surface size in DIPs. Zoom scales VideoPlayer.Width/Height directly rather
+    // than applying a ScaleTransform: VideoView is a NativeControlHost, so its child native window is
+    // outside Avalonia's compositor and any LayoutTransform on it is a no-op. Changing Width/Height makes
+    // the NativeControlHost re-size the actual native surface, which is the only way to zoom the video.
+    private const double VideoBaseWidth = 640;
+    private const double VideoBaseHeight = 360;
+
+    private void VideoZoomSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
     {
-        // ValueChanged fires during XAML init before VideoScale/VideoZoomLabel are constructed.
-        if (VideoScale is null || VideoZoomLabel is null)
+        // ValueChanged fires during XAML init before VideoPlayer/VideoZoomLabel are constructed.
+        if (VideoPlayer is null || VideoZoomLabel is null)
             return;
 
         double zoom = VideoZoomSlider.Value / 100.0;
-        VideoScale.ScaleX = zoom;
-        VideoScale.ScaleY = zoom;
+        VideoPlayer.Width = VideoBaseWidth * zoom;
+        VideoPlayer.Height = VideoBaseHeight * zoom;
         VideoZoomLabel.Text = $"{VideoZoomSlider.Value:0}%";
     }
 
-    private void VideoScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    private void VideoScrollViewer_PreviewPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
-        double factor = e.Delta > 0 ? 1.25 : 1.0 / 1.25;
+        double factor = e.Delta.Y > 0 ? 1.25 : 1.0 / 1.25;
         double newValue = Math.Clamp(VideoZoomSlider.Value * factor, VideoZoomSlider.Minimum, VideoZoomSlider.Maximum);
         VideoZoomSlider.Value = newValue;
         e.Handled = true;
@@ -3430,46 +3705,75 @@ public partial class MainWindow : Window
     {
         _videoLoadGeneration++;
         _videoIsPlaying = false;
+        _videoPositionTimer.Stop();
         _currentVideo = null;
-        VideoPlayer.Stop();
-        VideoPlayer.Close();
-        VideoPlayer.Source = null;
+        _videoPlayer.CloseAsync();
     }
 
-    private void VideoPlayPauseButton_Click(object sender, RoutedEventArgs e)
+    private void VideoPlayPauseButton_Click(object? sender, RoutedEventArgs e)
     {
-        if (VideoPlayer.Source is null)
+        if (_currentVideo is null)
             return;
 
         if (_videoIsPlaying)
         {
-            VideoPlayer.Pause();
+            _videoPlayer.Pause();
             _videoIsPlaying = false;
-            VideoPlayPauseButton.Content = "Play";
+            _videoPositionTimer.Stop();
+            SetVideoPlayPauseIcon(playing: false);
         }
         else
         {
-            VideoPlayer.Play();
+            _videoPlayer.Play();
             _videoIsPlaying = true;
-            VideoPlayPauseButton.Content = "Pause";
+            _videoPositionTimer.Start();
+            SetVideoPlayPauseIcon(playing: true);
         }
     }
 
-    private void VideoPlayer_MediaEnded(object sender, RoutedEventArgs e)
+    private void VideoPlayer_MediaEnded(object? sender, EventArgs e)
     {
-        // Rewind and pause; user can hit Play to loop.
-        VideoPlayer.Position = TimeSpan.Zero;
-        VideoPlayer.Pause();
+        // Fallback path: TimeChanged didn't fire close enough to the end to preempt, so LibVLC
+        // reached Ended state and released the video output (VideoView is now black). Stop+Play+Pause
+        // brings the player back into a state where seeking to 0 can render frame 0 -- LibVLC won't
+        // decode a frame from the Ended state directly.
         _videoIsPlaying = false;
-        VideoPlayPauseButton.Content = "Play";
+        _videoPositionTimer.Stop();
+        _videoPlayer.Stop();
+        _videoPlayer.Play();
+        _videoPlayer.Pause();
+        _videoPlayer.Position = TimeSpan.Zero;
+        VideoScrubSlider.Value = 0;
+        SetVideoPlayPauseIcon(playing: false);
+        UpdateVideoTimeReadout();
     }
 
-    private void VideoPlayer_MediaFailed(object sender, ExceptionRoutedEventArgs e)
+    /// <summary>
+    /// Marshaled onto the UI thread from LibVLC's TimeChanged callback. When playback approaches the end
+    /// of the media, rewinds to the start and pauses so LibVLC never reaches Ended state -- the video
+    /// output stays alive and continues showing frame 0 instead of going black.
+    /// </summary>
+    private void HandleVideoTimeChanged(long timeMs)
     {
-        VideoLabel.Text = $"Playback failed: {e.ErrorException.Message}";
+        if (!_videoIsPlaying || !_videoDurationKnown)
+            return;
+
+        long totalMs = (long)_videoPlayer.Duration!.Value.TotalMilliseconds;
+        // ~200ms guardband: TimeChanged fires roughly every 250ms, so this makes it likely we catch the
+        // tick before LibVLC's own end-of-stream transition. If we clip too much of the tail, lower it.
+        if (timeMs < totalMs - 200)
+            return;
+
+        _videoPlayer.Position = TimeSpan.Zero;
+        _videoPlayer.Pause();
+        _videoIsPlaying = false;
+        _videoPositionTimer.Stop();
+        VideoScrubSlider.Value = 0;
+        SetVideoPlayPauseIcon(playing: false);
+        UpdateVideoTimeReadout();
     }
 
-    private void OpenExternalButton_Click(object sender, RoutedEventArgs e)
+    private void OpenExternalButton_Click(object? sender, RoutedEventArgs e)
     {
         if (_currentContent is not ExternalVideoResource video)
             return;
@@ -3480,7 +3784,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, $"Could not open external player:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
+            _ = Dialogs.ShowMessageBox(this, $"Could not open external player:\n{ex.Message}", "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 }

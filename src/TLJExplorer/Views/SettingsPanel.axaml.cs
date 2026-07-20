@@ -1,7 +1,8 @@
 using System.IO;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Input;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using TLJExplorer.Services;
 using TLJExplorer.Core.Settings;
 
 namespace TLJExplorer.Views;
@@ -31,11 +32,11 @@ public partial class SettingsPanel : UserControl
         _owner = owner;
         _settings = settings;
         Populate();
-        Visibility = Visibility.Visible;
+        IsVisible = true;
         Focus();
     }
 
-    public void Hide() => Visibility = Visibility.Collapsed;
+    public void Hide() => IsVisible = false;
 
     private void Populate()
     {
@@ -87,7 +88,7 @@ public partial class SettingsPanel : UserControl
         FfmpegPathBox.Text = _settings.FfmpegPath ?? string.Empty;
     }
 
-    private void CategoryList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void CategoryList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (CategoryList.SelectedItem is not ListBoxItem { Tag: string tag })
             return;
@@ -95,21 +96,21 @@ public partial class SettingsPanel : UserControl
         // before the sections declared after the ListBox have been constructed.
         if (DisplaySection is null)
             return;
-        DisplaySection.Visibility     = tag == "Display"     ? Visibility.Visible : Visibility.Collapsed;
-        ModsSection.Visibility        = tag == "Mods"        ? Visibility.Visible : Visibility.Collapsed;
-        ToolsSection.Visibility       = tag == "Tools"       ? Visibility.Visible : Visibility.Collapsed;
-        DiagnosticsSection.Visibility = tag == "Diagnostics" ? Visibility.Visible : Visibility.Collapsed;
-        AppearanceSection.Visibility  = tag == "Appearance"  ? Visibility.Visible : Visibility.Collapsed;
+        DisplaySection.IsVisible     = tag == "Display";
+        ModsSection.IsVisible        = tag == "Mods";
+        ToolsSection.IsVisible       = tag == "Tools";
+        DiagnosticsSection.IsVisible = tag == "Diagnostics";
+        AppearanceSection.IsVisible  = tag == "Appearance";
     }
 
-    private void Close_Click(object sender, RoutedEventArgs e) => Hide();
+    private void Close_Click(object? sender, RoutedEventArgs e) => Hide();
 
-    // Click on the scrim (outside the card) closes; the card's own MouseLeftButtonDown marks the
+    // Click on the scrim (outside the card) closes; the card's own PointerPressed marks the
     // event handled so clicks inside don't bubble out and dismiss the panel.
-    private void Scrim_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) => Hide();
-    private void Card_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) => e.Handled = true;
+    private void Scrim_PointerPressed(object? sender, PointerPressedEventArgs e) => Hide();
+    private void Card_PointerPressed(object? sender, PointerPressedEventArgs e) => e.Handled = true;
 
-    private void ShowMipMaps_Changed(object sender, RoutedEventArgs e)
+    private void ShowMipMaps_Changed(object? sender, RoutedEventArgs e)
     {
         if (_initializing || _settings is null || _owner is null) return;
         _settings.ShowMipMaps = ShowMipMapsCheck.IsChecked == true;
@@ -117,14 +118,14 @@ public partial class SettingsPanel : UserControl
         _owner.OnShowMipMapsChanged();
     }
 
-    private void HighQuality_Changed(object sender, RoutedEventArgs e)
+    private void HighQuality_Changed(object? sender, RoutedEventArgs e)
     {
         if (_initializing || _settings is null) return;
         _settings.HighQuality = HighQualityCheck.IsChecked == true;
         _settings.Save();
     }
 
-    private void Aa_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void Aa_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_initializing || _settings is null) return;
         if (AaCombo.SelectedItem is ComboBoxItem { Tag: string tag } && int.TryParse(tag, out int samples))
@@ -134,7 +135,7 @@ public partial class SettingsPanel : UserControl
         }
     }
 
-    private void HideLocalized_Changed(object sender, RoutedEventArgs e)
+    private void HideLocalized_Changed(object? sender, RoutedEventArgs e)
     {
         if (_initializing || _settings is null || _owner is null) return;
         _settings.HideLocalizedEntries = HideLocalizedCheck.IsChecked == true;
@@ -142,7 +143,7 @@ public partial class SettingsPanel : UserControl
         _owner.OnHideLocalizedChanged();
     }
 
-    private void LoadAssetMods_Changed(object sender, RoutedEventArgs e)
+    private void LoadAssetMods_Changed(object? sender, RoutedEventArgs e)
     {
         if (_initializing || _settings is null || _owner is null) return;
         _settings.LoadAssetMods = LoadAssetModsCheck.IsChecked == true;
@@ -150,14 +151,14 @@ public partial class SettingsPanel : UserControl
         _owner.OnLoadAssetModsChanged();
     }
 
-    private void DumpSceneDiagnostics_Changed(object sender, RoutedEventArgs e)
+    private void DumpSceneDiagnostics_Changed(object? sender, RoutedEventArgs e)
     {
         if (_initializing || _settings is null) return;
         _settings.DumpSceneDiagnostics = DumpSceneDiagnosticsCheck.IsChecked == true;
         _settings.Save();
     }
 
-    private void Theme_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void Theme_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (_initializing || _settings is null || _owner is null) return;
         if (ThemeCombo.SelectedItem is ComboBoxItem { Tag: string theme })
@@ -168,14 +169,14 @@ public partial class SettingsPanel : UserControl
         }
     }
 
-    private async void SelectExternalMods_Click(object sender, RoutedEventArgs e)
+    private async void SelectExternalMods_Click(object? sender, RoutedEventArgs e)
     {
         if (_owner is null) return;
         await _owner.SelectExternalModsFolderAsync();
         UpdateExternalModsPathText();
     }
 
-    private async void ClearExternalMods_Click(object sender, RoutedEventArgs e)
+    private async void ClearExternalMods_Click(object? sender, RoutedEventArgs e)
     {
         if (_owner is null) return;
         await _owner.ClearExternalModsFolderAsync();
@@ -184,23 +185,23 @@ public partial class SettingsPanel : UserControl
 
     // Diagnose renders its report into MainWindow's TextViewer, so close the panel first so the
     // user actually sees the result.
-    private void DiagnoseExternalMods_Click(object sender, RoutedEventArgs e)
+    private void DiagnoseExternalMods_Click(object? sender, RoutedEventArgs e)
     {
         if (_owner is null) return;
         Hide();
         _owner.RunExternalModsDiagnostic();
     }
 
-    private void LocateFfmpeg_Click(object sender, RoutedEventArgs e)
+    private void LocateFfmpeg_Click(object? sender, RoutedEventArgs e)
     {
         if (_owner is null) return;
         _owner.PromptForFfmpeg();
         UpdateFfmpegPathText();
     }
 
-    // Commit path edits on LostFocus / Enter. Empty text (or whitespace) unsets the value —
+    // Commit path edits on LostFocus / Enter. Empty text (or whitespace) unsets the value --
     // that mirrors what the Clear button did.
-    private async void ExternalModsPathBox_LostFocus(object sender, RoutedEventArgs e)
+    private async void ExternalModsPathBox_LostFocus(object? sender, RoutedEventArgs e)
     {
         if (_initializing || _settings is null || _owner is null) return;
 
@@ -210,7 +211,7 @@ public partial class SettingsPanel : UserControl
 
         if (newValue is not null && !Directory.Exists(newValue))
         {
-            MessageBox.Show(Window.GetWindow(this) ?? _owner,
+            await Dialogs.ShowMessageBox(_owner,
                 $"Folder not found:\n{newValue}",
                 "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
             UpdateExternalModsPathText();
@@ -223,24 +224,24 @@ public partial class SettingsPanel : UserControl
         await _owner.ReloadVfsIfLoadedAsync();
     }
 
-    private void ExternalModsPathBox_KeyDown(object sender, KeyEventArgs e)
+    private void ExternalModsPathBox_KeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter) { Keyboard.ClearFocus(); e.Handled = true; }
-        else if (e.Key == Key.Escape) { UpdateExternalModsPathText(); Keyboard.ClearFocus(); e.Handled = true; }
+        if (e.Key == Key.Enter) { ClearFocus(); e.Handled = true; }
+        else if (e.Key == Key.Escape) { UpdateExternalModsPathText(); ClearFocus(); e.Handled = true; }
     }
 
-    private void FfmpegPathBox_LostFocus(object sender, RoutedEventArgs e)
+    private void FfmpegPathBox_LostFocus(object? sender, RoutedEventArgs e)
     {
         if (_initializing || _settings is null) return;
 
-        string newValue = FfmpegPathBox.Text.Trim();
+        string newValue = (FfmpegPathBox.Text ?? string.Empty).Trim();
         if (string.Equals(newValue, _settings.FfmpegPath, StringComparison.OrdinalIgnoreCase))
             return;
 
-        // Warn (but still persist) when the file isn't there — lets users pre-fill a planned path.
-        if (newValue.Length > 0 && !File.Exists(newValue))
+        // Warn (but still persist) when the file isn't there -- lets users pre-fill a planned path.
+        if (newValue.Length > 0 && !File.Exists(newValue) && _owner is not null)
         {
-            MessageBox.Show(Window.GetWindow(this) ?? _owner!,
+            _ = Dialogs.ShowMessageBox(_owner,
                 $"File not found:\n{newValue}\n\nSetting saved anyway; playback will fail until this path exists.",
                 "TLJ Explorer", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
@@ -250,9 +251,11 @@ public partial class SettingsPanel : UserControl
         UpdateFfmpegPathText();
     }
 
-    private void FfmpegPathBox_KeyDown(object sender, KeyEventArgs e)
+    private void FfmpegPathBox_KeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter) { Keyboard.ClearFocus(); e.Handled = true; }
-        else if (e.Key == Key.Escape) { UpdateFfmpegPathText(); Keyboard.ClearFocus(); e.Handled = true; }
+        if (e.Key == Key.Enter) { ClearFocus(); e.Handled = true; }
+        else if (e.Key == Key.Escape) { UpdateFfmpegPathText(); ClearFocus(); e.Handled = true; }
     }
+
+    private void ClearFocus() => TopLevel.GetTopLevel(this)?.FocusManager?.ClearFocus();
 }

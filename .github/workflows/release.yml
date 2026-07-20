@@ -12,9 +12,17 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+          - os: ubuntu-latest
+            rid: linux-x64
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -35,20 +43,30 @@ jobs:
         shell: pwsh
         run: |
           dotnet publish src/TLJExplorer/TLJExplorer.csproj `
-            -c Release -r win-x64 --self-contained true `
+            -c Release -r ${{ matrix.rid }} --self-contained true `
             -p:DebugType=none -p:DebugSymbols=false `
             -o publish
 
-      - name: Package
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $zip = "TLJExplorer-${{ steps.tag.outputs.tag }}-win-x64.zip"
+          $zip = "TLJExplorer-${{ steps.tag.outputs.tag }}-${{ matrix.rid }}.zip"
           Compress-Archive -Path publish\* -DestinationPath $zip
-          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ARCHIVE=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chmod +x publish/TLJExplorer
+          archive="TLJExplorer-${{ steps.tag.outputs.tag }}-${{ matrix.rid }}.tar.gz"
+          tar -czf "$archive" -C publish .
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          files: ${{ env.ZIP }}
+          files: ${{ env.ARCHIVE }}
           generate_release_notes: true

@@ -1,0 +1,28 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TLJExplorer.Views.MessageBoxWindow"
+        WindowStartupLocation="CenterOwner"
+        SizeToContent="WidthAndHeight"
+        CanResize="False"
+        ShowInTaskbar="False"
+        MinWidth="320"
+        MaxWidth="560">
+    <Grid Margin="20" RowDefinitions="Auto,20,Auto">
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,12,*">
+            <TextBlock x:Name="IconText"
+                       Grid.Column="0"
+                       FontSize="22"
+                       FontWeight="Bold"
+                       VerticalAlignment="Top" />
+            <TextBlock x:Name="MessageText"
+                       Grid.Column="2"
+                       TextWrapping="Wrap"
+                       VerticalAlignment="Center" />
+        </Grid>
+        <StackPanel x:Name="ButtonPanel"
+                    Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Spacing="8" />
+    </Grid>
+</Window>

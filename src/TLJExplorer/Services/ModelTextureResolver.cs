@@ -1,6 +1,5 @@
 using System.IO;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using Avalonia.Media.Imaging;
 using TLJExplorer.Core.FileSystem;
 using TLJExplorer.Core.Formats;
 
@@ -139,16 +138,9 @@ public static class ModelTextureResolver
 
     private static byte[] EncodePng(DecodedImage image)
     {
-        int stride = image.Width * 4;
-        var bitmap = BitmapSource.Create(
-            image.Width, image.Height, 96, 96,
-            PixelFormats.Bgra32, null, image.Pixels, stride);
-        bitmap.Freeze();
-
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using Bitmap bitmap = PngWriter.ToBitmap(image);
         using var mem = new MemoryStream();
-        encoder.Save(mem);
+        bitmap.Save(mem);
         return mem.ToArray();
     }
 

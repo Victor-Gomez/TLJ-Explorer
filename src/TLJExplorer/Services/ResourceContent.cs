@@ -1,4 +1,4 @@
-using System.Windows.Media.Imaging;
+using Avalonia.Media.Imaging;
 using TLJExplorer.Core.FileSystem;
 using TLJExplorer.Core.Formats;
 
@@ -55,7 +55,7 @@ public sealed record ModelResource(CirModel Model, FsNode SourceNode) : Resource
 /// animated layers (Bink/Smacker), each with pre-decoded PNG frames and a target framerate, positioned
 /// on top of the base.
 /// </summary>
-public sealed record SceneResource(BitmapSource Base, IReadOnlyList<SceneAnimatedOverlay> Overlays) : ResourceContent;
+public sealed record SceneResource(Bitmap Base, IReadOnlyList<SceneAnimatedOverlay> Overlays) : ResourceContent;
 
 /// <summary>
 /// One animated overlay in a <see cref="SceneResource"/>: a series of pre-decoded frame bitmaps drawn
@@ -65,5 +65,7 @@ public sealed record SceneAnimatedOverlay(
     string Name,
     int X,
     int Y,
-    IReadOnlyList<BitmapSource> Frames,
+    int Width,
+    int Height,
+    IReadOnlyList<Bitmap> Frames,
     double Fps);

@@ -1,16 +1,16 @@
 <Window x:Class="TLJExplorer.Views.CommandPaletteWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Go to File" Height="420" Width="640"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        WindowStyle="ToolWindow">
+        SystemDecorations="BorderOnly">
     <DockPanel Margin="12">
         <TextBox x:Name="QueryBox" DockPanel.Dock="Top" FontSize="16" Padding="6,4" Margin="0,0,0,8"
-                 TextChanged="QueryBox_TextChanged" PreviewKeyDown="QueryBox_PreviewKeyDown"/>
-        <TextBlock x:Name="HintText" DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.6" FontSize="11"
-                   Text="Type to fuzzy-match a path. Enter opens, Esc cancels, ↑/↓ moves selection."/>
-        <ListBox x:Name="ResultsList" MouseDoubleClick="ResultsList_MouseDoubleClick">
+                 TextChanged="QueryBox_TextChanged" KeyDown="QueryBox_KeyDown"/>
+        <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Opacity="0.6" FontSize="11"
+                   Text="Type to fuzzy-match a path. Enter opens, Esc cancels, up/down moves selection."/>
+        <ListBox x:Name="ResultsList" DoubleTapped="ResultsList_DoubleTapped">
             <ListBox.ItemTemplate>
                 <DataTemplate>
                     <StackPanel Orientation="Vertical">

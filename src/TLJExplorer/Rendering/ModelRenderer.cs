@@ -22,11 +22,11 @@ public readonly record struct OrbitCamera(Vector3D<float> Target, float Yaw, flo
 }
 
 /// <summary>
-/// Renders a single <see cref="CirModel"/> using Silk.NET.OpenGL and returns the frame as a BGRA32 pixel
-/// buffer suitable for a WPF <see cref="System.Windows.Media.Imaging.WriteableBitmap"/>. Uses an offscreen
+/// Renders a single <see cref="CirModel"/> using Silk.NET.OpenGL and returns the frame as a top-down
+/// BGRA32 pixel buffer suitable for blitting into an Avalonia <c>WriteableBitmap</c>. Uses an offscreen
 /// FBO rather than an embedded native child window because Silk.NET's GLFW-backed windows cannot be
-/// reliably reparented as WS_CHILD -- the readback cost is acceptable since the viewer only re-renders on
-/// demand (camera changes, resize, pose changes during animation).
+/// reliably reparented as a native child window -- the readback cost is acceptable since the viewer only
+/// re-renders on demand (camera changes, resize, pose changes during animation).
 /// </summary>
 public sealed class ModelRenderer : IDisposable
 {

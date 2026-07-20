@@ -2,9 +2,11 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Windows;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using TLJExplorer.Core.FileSystem;
 
 namespace TLJExplorer.ViewModels;
@@ -18,7 +20,7 @@ namespace TLJExplorer.ViewModels;
 /// </summary>
 public sealed class FsNodeViewModel : INotifyPropertyChanged
 {
-    private const string IconBasePath = "pack://application:,,,/Assets/Icons/";
+    private const string IconBasePath = "avares://TLJExplorer/Assets/Icons/";
 
     // Vector icons (Assets/Icons/VectorIcons.xaml, merged into Application.Resources) take priority
     // over the raster .ico set for the categories they cover.
@@ -46,8 +48,8 @@ public sealed class FsNodeViewModel : INotifyPropertyChanged
     private const string FolderOpenVectorIcon = "FolderOpenTypeIcon";
 
     // Icons are requested once per visible row, but a tree can have tens of thousands of rows -- cache
-    // the resolved ImageSource per icon key instead of re-decoding/re-looking-up on every binding pull.
-    private static readonly Dictionary<string, ImageSource> IconCache = [];
+    // the resolved IImage per icon key instead of re-decoding/re-looking-up on every binding pull.
+    private static readonly Dictionary<string, IImage> IconCache = [];
 
     private readonly VirtualFileSystem? _vfs;
     private bool _childrenLoaded;
@@ -164,7 +166,7 @@ public sealed class FsNodeViewModel : INotifyPropertyChanged
     /// otherwise a raster <c>.ico</c> from the per-file-type icon set (root / remaining resource
     /// extensions / generic raw-file icon for anything unrecognized).
     /// </summary>
-    public ImageSource? IconSource
+    public IImage? IconSource
     {
         get
         {
@@ -187,25 +189,32 @@ public sealed class FsNodeViewModel : INotifyPropertyChanged
         }
     }
 
-    private static ImageSource GetRasterIcon(string fileName)
+    private static IImage GetRasterIcon(string fileName)
     {
         string cacheKey = "raster:" + fileName;
-        if (IconCache.TryGetValue(cacheKey, out ImageSource? cached))
+        if (IconCache.TryGetValue(cacheKey, out IImage? cached))
             return cached;
 
-        var image = new BitmapImage(new Uri(IconBasePath + fileName));
-        image.Freeze();
+        using Stream stream = AssetLoader.Open(new Uri(IconBasePath + fileName));
+        var image = new Bitmap(stream);
         IconCache[cacheKey] = image;
         return image;
     }
 
-    private static ImageSource GetVectorIcon(string resourceKey)
+    private static IImage GetVectorIcon(string resourceKey)
     {
         string cacheKey = "vector:" + resourceKey;
-        if (IconCache.TryGetValue(cacheKey, out ImageSource? cached))
+        if (IconCache.TryGetValue(cacheKey, out IImage? cached))
             return cached;
 
-        var image = (ImageSource)Application.Current.Resources[resourceKey];
+        // The plain Resources[key] indexer only searches the top-level dictionary, not merged ones --
+        // these icons live in Assets/Icons/VectorIcons.axaml, merged in via
+        // Application.Resources.MergedDictionaries, so that indexer silently returned null here (every
+        // tree row rendered with no icon at all). TryFindResource walks merged dictionaries correctly;
+        // see ResourceKeyToImageConverter for the same pattern used successfully elsewhere.
+        if (!Application.Current!.TryFindResource(resourceKey, out object? resource) || resource is not IImage image)
+            throw new InvalidOperationException($"Vector icon resource '{resourceKey}' was not found.");
+
         IconCache[cacheKey] = image;
         return image;
     }

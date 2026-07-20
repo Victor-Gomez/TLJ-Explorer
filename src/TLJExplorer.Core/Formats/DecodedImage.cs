@@ -5,8 +5,8 @@ namespace TLJExplorer.Core.Formats;
 /// <see cref="TLJExplorer.Core.Formats"/>. Pixel data is tightly packed BGRA32
 /// (4 bytes per pixel, order Blue/Green/Red/Alpha), stored top-down and
 /// row-major with a stride of <c>Width * 4</c> bytes. This layout maps
-/// directly onto WPF's <c>PixelFormats.Bgra32</c> and most modern imaging
-/// libraries.
+/// directly onto Avalonia's <c>PixelFormat.Bgra8888</c> and most modern
+/// imaging libraries.
 /// </summary>
 public sealed class DecodedImage
 {
