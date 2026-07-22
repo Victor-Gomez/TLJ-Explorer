@@ -12,8 +12,6 @@ on:
 
 jobs:
   build:
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -53,7 +51,6 @@ jobs:
         run: |
           $zip = "TLJExplorer-${{ steps.tag.outputs.tag }}-${{ matrix.rid }}.zip"
           Compress-Archive -Path publish\* -DestinationPath $zip
-          "ARCHIVE=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -62,11 +59,41 @@ jobs:
           chmod +x publish/TLJExplorer
           archive="TLJExplorer-${{ steps.tag.outputs.tag }}-${{ matrix.rid }}.tar.gz"
           tar -czf "$archive" -C publish .
-          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.rid }}
+          path: TLJExplorer-${{ steps.tag.outputs.tag }}-${{ matrix.rid }}.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+          else
+            tag="${{ inputs.tag }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download all package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
-          files: ${{ env.ARCHIVE }}
+          files: dist/*
           generate_release_notes: true
