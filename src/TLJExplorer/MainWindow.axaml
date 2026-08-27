@@ -80,8 +80,8 @@
         <!-- Preview canvas menu. Entries are shown/hidden per loaded resource in
              PreviewContextMenu_Opening; see PreviewContextActions for the rules. -->
         <ContextMenu x:Key="PreviewContextMenu" Opening="PreviewContextMenu_Opening">
-            <MenuItem x:Name="PreviewMenuZoomIn" Header="Zoom _In" Click="PreviewZoomIn_Click" InputGesture="Ctrl+Plus"/>
-            <MenuItem x:Name="PreviewMenuZoomOut" Header="Zoom _Out" Click="PreviewZoomOut_Click" InputGesture="Ctrl+Minus"/>
+            <MenuItem x:Name="PreviewMenuZoomIn" Header="Zoom _In" Click="PreviewZoomIn_Click"/>
+            <MenuItem x:Name="PreviewMenuZoomOut" Header="Zoom _Out" Click="PreviewZoomOut_Click"/>
             <MenuItem x:Name="PreviewMenuFit" Header="_Fit to Window" Click="PreviewResetZoom_Click"/>
             <MenuItem x:Name="PreviewMenuResetView" Header="_Reset View" Click="ModelResetView_Click"
                       ToolTip.Tip="Return the 3D camera to its default orientation and distance."/>
