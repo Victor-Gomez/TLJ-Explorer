@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Markup.Xaml.Styling;
+using Avalonia.Media;
 using Avalonia.Themes.Fluent;
 
 [assembly: AvaloniaTestApplication(typeof(TLJExplorer.Tests.TestAppBuilder))]
@@ -33,5 +34,15 @@ public sealed class TestApp : Application
         {
             Source = new Uri("avares://TLJExplorer/Assets/Icons/VectorIcons.axaml"),
         });
+
+        // MainWindow.axaml binds the tree's icons through this converter as a StaticResource, which the
+        // real App.axaml supplies. StaticResource throws when unresolved (unlike DynamicResource), so
+        // without it no test can Show() a MainWindow.
+        Resources["ResourceKeyToImageConverter"] = new TLJExplorer.Services.ResourceKeyToImageConverter();
+
+        // The selected-segment brushes MainWindow's segmented picker style resolves. Real values live in
+        // App.axaml's theme dictionaries; tests only need the keys to resolve to something inspectable.
+        Resources["SegmentSelectedBackgroundBrush"] = new SolidColorBrush(Color.Parse("#FF60CDFF"));
+        Resources["SegmentSelectedForegroundBrush"] = new SolidColorBrush(Color.Parse("#FF0A1A24"));
     }
 }

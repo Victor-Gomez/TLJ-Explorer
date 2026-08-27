@@ -164,7 +164,10 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _settings = AppSettings.Load();
-        _tempFiles = ((App)Application.Current!).TempFiles;
+        // Falls back to a private tracker when the host application isn't our App -- which is only the
+        // case under the headless test harness (see TestAppBuilder). The real app always supplies the
+        // shared one, so temp files still land in a single tracker that's purged on exit.
+        _tempFiles = (Application.Current as App)?.TempFiles ?? new TempFileTracker();
 
         // See the _imageScale/etc. field comments: these aren't x:Name-addressable from XAML, so wire
         // them onto their host controls' LayoutTransform/Clip properties here instead.
@@ -329,6 +332,14 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
+        // Everything below is application-startup behaviour rather than window construction: warming up
+        // native engines, reopening the last install, and checking for updates. Skip it when the host
+        // isn't the real App -- i.e. under the headless test harness, where spinning up LibVLC/OpenGL
+        // crashes on teardown, scanning the user's real install is slow and side-effecting, and the
+        // update check would make a network call (and, on first run, open a modal dialog).
+        if (Application.Current is not App)
+            return;
+
         // Fire-and-forget: now that the window itself has loaded, warm up the native engines the sound/
         // video/3D panels need in the background so opening the first asset doesn't pay for it -- rather
         // than deferring that cost all the way out to the user's first click.
@@ -342,6 +353,9 @@ public partial class MainWindow : Window
         {
             SetStatus("No TLJ install selected. Use File -> Select TLJ Install Folder...");
         }
+
+        // Last, so a slow or hanging network call can never delay the tree appearing.
+        await RunStartupUpdateCheckAsync();
     }
 
     /// <summary>
@@ -734,13 +748,26 @@ public partial class MainWindow : Window
             return;
         }
 
+        await ExportRawAsync(_selectedNode);
+    }
+
+    /// <summary>
+    /// Writes <paramref name="node"/>'s underlying bytes to a user-chosen path. Takes the node explicitly
+    /// rather than reading <c>_selectedNode</c> so the tree's context menu can export the row that was
+    /// right-clicked without first loading (and for video, transcoding) it into the preview.
+    /// </summary>
+    private async Task ExportRawAsync(FsNode node)
+    {
+        if (_vfs is null)
+            return;
+
         // "Raw" means the underlying file bytes verbatim -- for an .xmg the user wants the .xmg back,
         // not a hex dump. Preserve the source extension so the exported file round-trips through the
         // engine's decoders (or any external tool that recognizes the format).
-        string extension = Path.GetExtension(_selectedNode.Name).TrimStart('.');
+        string extension = Path.GetExtension(node.Name).TrimStart('.');
         if (string.IsNullOrEmpty(extension))
             extension = "bin";
-        string defaultName = SanitizeFileName(Path.GetFileNameWithoutExtension(_selectedNode.Name)) + "." + extension;
+        string defaultName = SanitizeFileName(Path.GetFileNameWithoutExtension(node.Name)) + "." + extension;
 
         string? path = await Dialogs.ShowSaveFileDialog(
             this, "Export Raw", defaultName,
@@ -751,7 +778,7 @@ public partial class MainWindow : Window
 
         try
         {
-            using Stream source = _vfs.OpenFile(_selectedNode);
+            using Stream source = _vfs.OpenFile(node);
             using FileStream dest = File.Create(path);
             await source.CopyToAsync(dest);
             RememberExportFolder(path);
@@ -969,7 +996,170 @@ public partial class MainWindow : Window
     /// updates TreeView.SelectedItem before the context menu opens, using the current selection directly
     /// is simpler and equally correct here.
     /// </summary>
-    private FsNode? ResolveContextTarget(object? sender) => (Tree.SelectedItem as FsNodeViewModel)?.Node;
+    /// <summary>
+    /// The node the context menu was opened on, captured in <see cref="TreeContextMenu_Opening"/>.
+    /// Right-clicking a TreeViewItem doesn't select it, so the selection is not a reliable stand-in for
+    /// "the row the user right-clicked" -- reading it would act on whatever was previously selected.
+    /// </summary>
+    private FsNode? _contextTargetNode;
+
+    private FsNode? ResolveContextTarget(object? sender) =>
+        _contextTargetNode ?? (Tree.SelectedItem as FsNodeViewModel)?.Node;
+
+    /// <summary>
+    /// Resolves which row the menu is opening over and shows only the entries that actually apply to it
+    /// (see <see cref="TreeContextActions"/>), including hiding a group separator whose whole group is
+    /// hidden. Cancels the open entirely when nothing applies, rather than showing an empty menu.
+    /// </summary>
+    private void TreeContextMenu_Opening(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        _contextTargetNode = (sender as ContextMenu)?.PlacementTarget switch
+        {
+            // The menu is attached to the TreeViewItem via a style setter, so the placement target is
+            // normally the item itself; walk up for the case where it resolves to an inner visual.
+            Control control => control.DataContext as FsNodeViewModel
+                               ?? control.FindAncestorOfType<TreeViewItem>()?.DataContext as FsNodeViewModel,
+            _ => null,
+        } is { } vm
+            ? vm.Node
+            : (Tree.SelectedItem as FsNodeViewModel)?.Node;
+
+        TreeContextActions actions = TreeContextActions.For(_contextTargetNode);
+        if (actions.IsEmpty)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        TreeMenuCopyPath.IsVisible = actions.CopyPath;
+        TreeMenuReveal.IsVisible = actions.RevealInExplorer;
+
+        TreeMenuModSeparator.IsVisible = actions.HasModGroup;
+        TreeMenuPlayLocalized.IsVisible = actions.PlayLocalized;
+        TreeMenuViewOriginal.IsVisible = actions.ViewOriginal;
+        TreeMenuCompareMod.IsVisible = actions.CompareMod;
+        TreeMenuExtractAsMod.IsVisible = actions.ExtractAsMod;
+
+        TreeMenuExportSeparator.IsVisible = actions.HasExportGroup;
+        TreeMenuExportItem.IsVisible = actions.ExportItem;
+        TreeMenuExportRaw.IsVisible = actions.ExportRaw;
+        TreeMenuBatchExport.IsVisible = actions.BatchExportFolder;
+    }
+
+    // ---- Preview canvas context menu ---------------------------------------------------------------
+
+    /// <summary>
+    /// Shows only the entries that apply to whatever the canvas currently holds (see
+    /// <see cref="PreviewContextActions"/>), and cancels the open when nothing is loaded rather than
+    /// popping an empty menu over a blank canvas.
+    /// </summary>
+    private void PreviewContextMenu_Opening(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        PreviewContextActions actions = PreviewContextActions.For(_currentContent, _selectedNode);
+        if (actions.IsEmpty)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        PreviewMenuZoomIn.IsVisible = actions.Zoom;
+        PreviewMenuZoomOut.IsVisible = actions.Zoom;
+        PreviewMenuFit.IsVisible = actions.Zoom;
+        PreviewMenuResetView.IsVisible = actions.ResetView;
+
+        PreviewMenuWireframe.IsVisible = actions.ToggleWireframe;
+        // Reflect the live setting each time it opens -- the same toggle also lives in the model panel
+        // and in Settings, so the menu must not show a stale tick.
+        PreviewMenuWireframe.IsChecked = _settings.ModelViewerWireframe;
+
+        PreviewMenuCopySelection.IsVisible = actions.CopyText;
+        PreviewMenuCopyText.IsVisible = actions.CopyText;
+        PreviewMenuOpenExternal.IsVisible = actions.OpenExternally;
+
+        PreviewMenuViewSeparator.IsVisible = actions.HasViewGroup;
+        PreviewMenuExport.IsVisible = actions.Export;
+        PreviewMenuExportRaw.IsVisible = actions.ExportRaw;
+
+        PreviewMenuPathSeparator.IsVisible = actions.CopyPath || actions.RevealInExplorer;
+        PreviewMenuCopyPath.IsVisible = actions.CopyPath;
+        PreviewMenuReveal.IsVisible = actions.RevealInExplorer;
+    }
+
+    /// <summary>
+    /// Zoom entries serve both the image viewer and the scene compositor, which keep separate zoom
+    /// state and separate handlers; route to whichever is on screen.
+    /// </summary>
+    private void PreviewZoomIn_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_currentContent is SceneResource)
+            SceneZoomIn_Click(sender, e);
+        else
+            ZoomIn_Click(sender, e);
+    }
+
+    private void PreviewZoomOut_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_currentContent is SceneResource)
+            SceneZoomOut_Click(sender, e);
+        else
+            ZoomOut_Click(sender, e);
+    }
+
+    private void PreviewResetZoom_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_currentContent is SceneResource)
+            SceneResetZoom_Click(sender, e);
+        else
+            ResetZoom_Click(sender, e);
+    }
+
+    /// <summary>
+    /// Mirrors the model panel's wireframe checkbox. Writes through the same path so the two controls and
+    /// the persisted setting can't disagree.
+    /// </summary>
+    private void PreviewWireframe_Click(object? sender, RoutedEventArgs e)
+    {
+        ModelWireframeCheck.IsChecked = PreviewMenuWireframe.IsChecked;
+        ModelWireframe_Changed(sender, e);
+    }
+
+    private async void PreviewCopySelection_Click(object? sender, RoutedEventArgs e)
+    {
+        string selection = TextPanel.SelectedText;
+        await Dialogs.SetClipboardTextAsync(this, string.IsNullOrEmpty(selection) ? TextPanel.Text ?? "" : selection);
+        SetStatus(string.IsNullOrEmpty(selection) ? "Copied all text." : "Copied selection.");
+    }
+
+    private async void PreviewCopyAllText_Click(object? sender, RoutedEventArgs e)
+    {
+        await Dialogs.SetClipboardTextAsync(this, TextPanel.Text ?? "");
+        SetStatus("Copied all text.");
+    }
+
+    private async void PreviewCopyPath_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_selectedNode is null)
+            return;
+
+        await Dialogs.SetClipboardTextAsync(this, _selectedNode.GetPath());
+        SetStatus($"Copied path: {_selectedNode.GetPath()}");
+    }
+
+    private void PreviewReveal_Click(object? sender, RoutedEventArgs e)
+    {
+        // Reuse the tree's implementation against the previewed node.
+        _contextTargetNode = _selectedNode;
+        TreeContextRevealInExplorer_Click(sender, e);
+    }
+
+    private async void TreeContextExportRaw_Click(object? sender, RoutedEventArgs e)
+    {
+        FsNode? node = ResolveContextTarget(sender);
+        if (node is null || (node.NodeType & FsNodeType.File) == 0 || _vfs is null)
+            return;
+
+        await ExportRawAsync(node);
+    }
 
     private async void TreeContextCopyPath_Click(object? sender, RoutedEventArgs e)
     {
@@ -1130,13 +1320,9 @@ public partial class MainWindow : Window
         if (node is null || node.Parent is null || _vfs is null)
             return;
 
-        // Find a sibling file whose name matches (case-insensitive) but whose IsLocalized flag differs.
-        // English variant is IsLocalized=false; the "other" is the localized variant.
-        FsNode? sibling = node.Parent.Children.FirstOrDefault(c =>
-            (c.NodeType & FsNodeType.File) != 0 &&
-            !ReferenceEquals(c, node) &&
-            c.Name.Equals(node.Name, StringComparison.OrdinalIgnoreCase) &&
-            c.IsLocalized != node.IsLocalized);
+        // Shared with the context menu's visibility rule, so the entry can't be offered for a node that
+        // then turns out to have no counterpart.
+        FsNode? sibling = TreeContextActions.FindLocalizedSibling(node);
 
         if (sibling is null)
         {
@@ -1471,6 +1657,136 @@ public partial class MainWindow : Window
 
     private void OpenSettings_Click(object? sender, RoutedEventArgs e) =>
         SettingsOverlay.Show(this, _settings);
+
+    // ---- Help menu -------------------------------------------------------------------------------
+
+    private async void About_Click(object? sender, RoutedEventArgs e) =>
+        await new AboutWindow(_settings).ShowDialog(this);
+
+    private async void CheckForUpdates_Click(object? sender, RoutedEventArgs e) =>
+        await UpdateUi.CheckInteractiveAsync(this, _settings);
+
+    private async void OpenLogFile_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!File.Exists(Log.FilePath))
+        {
+            await Dialogs.ShowMessageBox(
+                this,
+                $"No log file has been written yet.\n\nIt will appear at:\n{Log.FilePath}",
+                "Open Log File",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(Log.FilePath) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Log.Exception("Failed to open log file", ex);
+            await Dialogs.ShowMessageBox(this, $"Could not open the log file.\n\n{ex.Message}",
+                "Open Log File", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    // ---- Startup update check --------------------------------------------------------------------
+
+    /// <summary>
+    /// The quiet half of the update flow, run once the window is up. Unlike the Help menu's explicit
+    /// check this reports nothing unless there is genuinely something newer: no "up to date" popup, and
+    /// network failures are logged and swallowed. On first launch it asks for consent instead of
+    /// checking -- the app should not contact a remote host before the user has agreed to it.
+    /// </summary>
+    private async Task RunStartupUpdateCheckAsync()
+    {
+        if (_settings.UpdateCheckMode == "Ask")
+        {
+            await PromptForUpdateConsentAsync();
+            return;
+        }
+
+        if (_settings.UpdateCheckMode != "OnStartup")
+            return;
+
+        // Rate-limit ourselves: GitHub allows 60 unauthenticated requests an hour per IP, and a user who
+        // restarts the app ten times in a session gains nothing from ten checks.
+        if (_settings.LastUpdateCheckUtc is { } last &&
+            DateTime.UtcNow - last < UpdateChecker.StartupCheckInterval)
+        {
+            return;
+        }
+
+        UpdateCheckResult result = await UpdateChecker.CheckAsync(_settings.ReleaseFeedUrl, AppInfo.Version);
+        if (result.Error is not null)
+            return;
+
+        _settings.LastUpdateCheckUtc = DateTime.UtcNow;
+        _settings.Save();
+
+        if (!result.UpdateAvailable)
+            return;
+
+        // Honour "Skip This Version" -- but only up to that version. Comparing versions rather than tag
+        // strings means a release newer than the skipped one still gets reported.
+        if (UpdateChecker.TryParseTag(_settings.SkippedUpdateVersion) is { } skipped &&
+            !UpdateChecker.IsNewer(skipped, result.LatestVersion))
+        {
+            return;
+        }
+
+        ShowUpdateBanner(result);
+    }
+
+    /// <summary>
+    /// One-time first-launch question about automatic update checks. Whichever way it's answered the
+    /// answer is persisted, so this never asks twice.
+    /// </summary>
+    private async Task PromptForUpdateConsentAsync()
+    {
+        MessageBoxResult choice = await Dialogs.ShowMessageBox(
+            this,
+            "Check GitHub for new versions of TLJ Explorer automatically?\n\n" +
+            "This contacts github.com at most once a day and only reads the latest release number. " +
+            "Nothing is downloaded or installed without asking you.\n\n" +
+            "You can change this later in Options > Settings.",
+            "Automatic Update Checks",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question);
+
+        _settings.UpdateCheckMode = choice == MessageBoxResult.Yes ? "OnStartup" : "Never";
+        _settings.Save();
+
+        if (choice == MessageBoxResult.Yes)
+            await RunStartupUpdateCheckAsync();
+    }
+
+    /// <summary>Latest release found by the startup check, held for the banner's Download/Skip buttons.</summary>
+    private UpdateCheckResult _pendingUpdate;
+
+    private void ShowUpdateBanner(UpdateCheckResult result)
+    {
+        _pendingUpdate = result;
+        UpdateBannerText.Text = $"TLJ Explorer {result.LatestVersion} is available -- you have {AppInfo.DisplayVersion}.";
+        UpdateBanner.IsVisible = true;
+    }
+
+    private void UpdateBannerDownload_Click(object? sender, RoutedEventArgs e)
+    {
+        UpdateUi.OpenReleasePage(_pendingUpdate.ReleaseUrl, _settings);
+        UpdateBanner.IsVisible = false;
+    }
+
+    private void UpdateBannerSkip_Click(object? sender, RoutedEventArgs e)
+    {
+        _settings.SkippedUpdateVersion = _pendingUpdate.LatestVersion;
+        _settings.Save();
+        UpdateBanner.IsVisible = false;
+    }
+
+    private void UpdateBannerDismiss_Click(object? sender, RoutedEventArgs e) =>
+        UpdateBanner.IsVisible = false;
 
     private void AutoPlaySound_Click(object? sender, RoutedEventArgs e)
     {
@@ -2067,12 +2383,28 @@ public partial class MainWindow : Window
         double handleLocalWidth = CompareDividerHandleScreenWidth / zoom;
 
         ImageCompareDivider.Width = dividerLocalWidth;
-        ImageCompareDivider.Margin = new Thickness(x - (dividerLocalWidth / 2), 0, 0, 0);
+        ImageCompareDivider.Margin = new Thickness(StageAlignedLeft(x, dividerLocalWidth), 0, 0, 0);
         ImageCompareDivider.Height = _compareCanvasHeight;
 
         ImageCompareDividerHandle.Width = handleLocalWidth;
-        ImageCompareDividerHandle.Margin = new Thickness(x - (handleLocalWidth / 2), 0, 0, 0);
+        ImageCompareDividerHandle.Margin = new Thickness(StageAlignedLeft(x, handleLocalWidth), 0, 0, 0);
         ImageCompareDividerHandle.Height = _compareCanvasHeight;
+    }
+
+    /// <summary>
+    /// Left margin that centres a <paramref name="width"/>-wide overlay on <paramref name="centre"/>
+    /// while keeping it inside the stage. Centring alone lets half the element hang past the canvas at
+    /// either extreme, where it's clipped away -- so at x=0 or x=canvasWidth the user sees a half-width
+    /// divider and gets a half-width grab area, and the wider the element (the grab handle, or the bar
+    /// at low zoom, both of which scale as 1/zoom) the more of it disappears. Butting it up against the
+    /// edge instead keeps the whole thing visible and grabbable across the full travel.
+    /// </summary>
+    private double StageAlignedLeft(double centre, double width)
+    {
+        // An element wider than the stage itself (possible for the grab handle on a small canvas at low
+        // zoom, since its local width is 14/zoom) can't be contained; pin it to the left edge.
+        double maxLeft = Math.Max(0, _compareCanvasWidth - width);
+        return Math.Clamp(centre - (width / 2), 0, maxLeft);
     }
 
     private void ApplyImageCompareMode()
@@ -2082,8 +2414,26 @@ public partial class MainWindow : Window
         ImageCompareSideBySideContainer.IsVisible = !wipe;
     }
 
+    /// <summary>
+    /// Selects <paramref name="wipe"/>'s segment and clears the other. These are ToggleButtons in a
+    /// segmented picker rather than grouped RadioButtons, so the mutual exclusion is ours to enforce --
+    /// which is deliberate: a RadioButton raises <c>Checked</c> BEFORE the group unchecks its siblings,
+    /// so a handler that reads a sibling's <c>IsChecked</c> reads pre-change state. That is exactly what
+    /// used to make clicking "Side-by-side" appear to do nothing.
+    /// </summary>
+    private void SetImageCompareMode(bool wipe)
+    {
+        ImageCompareWipeMode.IsChecked = wipe;
+        ImageCompareSideBySideMode.IsChecked = !wipe;
+    }
+
     private void ImageCompareMode_Changed(object? sender, RoutedEventArgs e)
     {
+        // Drive the mode off which segment was clicked, never off the buttons' own toggle state: a click
+        // on the already-active segment would otherwise un-toggle it and leave the picker with nothing
+        // selected.
+        SetImageCompareMode(ReferenceEquals(sender, ImageCompareWipeMode));
+
         if (!ImageComparePanel.IsVisible)
             return;
 

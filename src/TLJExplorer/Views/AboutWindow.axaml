@@ -1,0 +1,110 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="TLJExplorer.Views.AboutWindow"
+        Title="About TLJ Explorer"
+        WindowStartupLocation="CenterOwner"
+        SizeToContent="Height"
+        Width="520"
+        CanResize="False"
+        ShowInTaskbar="False"
+        Icon="avares://TLJExplorer/Assets/TLJExplorer.ico">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <!-- The Fluent theme uses one mid-blue (#0078D7) for links in both variants, and it clears
+                 4.5:1 contrast against neither background (~3:1 on the dark one, ~4:1 on white). Pin a
+                 per-variant pair that does. -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="#6CB6FF"/>
+                    <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="#8FCBFF"/>
+                    <SolidColorBrush x:Key="HyperlinkButtonForegroundPressed" Color="#4E9BE0"/>
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="HyperlinkButtonForeground" Color="#0060B0"/>
+                    <SolidColorBrush x:Key="HyperlinkButtonForegroundPointerOver" Color="#00468A"/>
+                    <SolidColorBrush x:Key="HyperlinkButtonForegroundPressed" Color="#003666"/>
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Window.Styles>
+        <Style Selector="TextBlock.section">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,14,0,4"/>
+        </Style>
+        <Style Selector="TextBlock.label">
+            <Setter Property="Opacity" Value="0.7"/>
+            <Setter Property="Margin" Value="0,0,10,0"/>
+        </Style>
+        <Style Selector="SelectableTextBlock.value">
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="FontFamily" Value="Consolas,Menlo,monospace"/>
+            <Setter Property="FontSize" Value="11.5"/>
+        </Style>
+    </Window.Styles>
+
+    <DockPanel Margin="20">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Spacing="8" Margin="0,18,0,0">
+            <Button Content="Copy Diagnostics" Click="CopyDiagnostics_Click" Padding="14,6"
+                    ToolTip.Tip="Copy the version and environment details above to the clipboard, for pasting into a bug report."/>
+            <Button Content="Check for Updates" Click="CheckUpdates_Click" x:Name="CheckUpdatesButton" Padding="14,6"/>
+            <Button Content="Close" Click="Close_Click" Padding="20,6" IsDefault="True"/>
+        </StackPanel>
+
+        <StackPanel>
+            <!-- Header: icon + name + version -->
+            <StackPanel Orientation="Horizontal" Spacing="14">
+                <Image Source="avares://TLJExplorer/Assets/TLJExplorer.ico" Width="48" Height="48"
+                       VerticalAlignment="Top"/>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="TLJ Explorer" FontSize="20" FontWeight="Bold"/>
+                    <SelectableTextBlock x:Name="VersionText" Opacity="0.8" Margin="0,2,0,0"/>
+                    <TextBlock Text="An asset viewer for The Longest Journey."
+                               Opacity="0.7" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                </StackPanel>
+            </StackPanel>
+
+            <TextBlock Classes="section" Text="Environment"/>
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" >
+                <TextBlock Grid.Row="0" Grid.Column="0" Classes="label" Text=".NET"/>
+                <SelectableTextBlock Grid.Row="0" Grid.Column="1" Classes="value" x:Name="RuntimeText"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Classes="label" Text="Avalonia"/>
+                <SelectableTextBlock Grid.Row="1" Grid.Column="1" Classes="value" x:Name="AvaloniaText"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Classes="label" Text="ffmpeg"/>
+                <SelectableTextBlock Grid.Row="2" Grid.Column="1" Classes="value" x:Name="FfmpegText"
+                                     ToolTip.Tip="Required for Smacker/Bink video preview and the scene viewer's animated overlays. Set the path in Options > Settings > External Tools."/>
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Classes="label" Text="LibVLC"/>
+                <SelectableTextBlock Grid.Row="3" Grid.Column="1" Classes="value" x:Name="LibVlcText"
+                                     ToolTip.Tip="Backs sound and video playback. Bundled on Windows; install it from your distro's packages on Linux."/>
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Classes="label" Text="Log"/>
+                <SelectableTextBlock Grid.Row="4" Grid.Column="1" Classes="value" x:Name="LogPathText"/>
+            </Grid>
+
+            <TextBlock Classes="section" Text="Credits"/>
+            <TextBlock TextWrapping="Wrap" Opacity="0.85" LineHeight="18">
+                The format decoders build on two bodies of prior reverse-engineering work:<LineBreak/>
+                • <Run FontWeight="SemiBold">TLJView</Run> by Deniz Oezmen — the original analysis of the
+                XARC, XRC, XMG, TM, CIR, ANI and ISN formats.<LineBreak/>
+                • <Run FontWeight="SemiBold">ScummVM's Stark engine</Run> — reference for the XRC resource
+                tree semantics, the ADPCM audio variants, and scene composition.<LineBreak/><LineBreak/>
+                <Run FontStyle="Italic">The Longest Journey</Run> is a trademark of its respective owners.
+                This is an unaffiliated fan-made tool and ships no game data.
+            </TextBlock>
+
+            <!-- HyperlinkButton rather than a restyled Button: it carries the Fluent theme's own
+                 light/dark link colours, so these stay legible in both themes. -->
+            <StackPanel Orientation="Horizontal" Spacing="4" Margin="-8,10,0,0">
+                <HyperlinkButton Content="Project on GitHub" Click="OpenRepo_Click"/>
+                <HyperlinkButton Content="Report an Issue" Click="OpenIssues_Click"/>
+                <HyperlinkButton Content="Releases" Click="OpenReleases_Click"/>
+            </StackPanel>
+        </StackPanel>
+    </DockPanel>
+</Window>

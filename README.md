@@ -23,6 +23,8 @@ trees, and static composites of individual rooms.
   the room as the player sees it on entry.
 - **Structural dumps.** BIFF, XRC, CIR, and ANI records can be rendered as indented text trees for
   reverse-engineering and debugging.
+- **Update checks.** Optionally asks GitHub whether a newer release exists, then links you to it.
+  Off until you say yes (see [Updates](#updates)).
 
 ## Building
 
@@ -55,12 +57,31 @@ it on that platform.
   - `Services/` — resource loading, ffmpeg driver, temp-file scratch dir, model catalog.
   - `ViewModels/` — the lazy tree-view wrapper around the virtual filesystem.
 
+## Updates
+
+**Help → Check for Updates** compares this build's version against the latest GitHub release and, if
+there's a newer one, offers to open its release page. Nothing is ever downloaded, extracted or
+replaced for you — releases ship as self-contained archives, so upgrading means unzipping the new one
+yourself.
+
+On first launch the app asks once whether to also check automatically at startup, and remembers the
+answer either way; change it later under **Options → Settings → Updates**. When enabled, a startup
+check contacts `github.com` at most once a day and reads only the latest release number. Forks can
+point the check at their own repository via the `ReleaseFeedUrl` setting in `settings.json` — the
+About box's links follow it too.
+
+**Help → About** reports the exact version and commit the build came from, plus whether ffmpeg and
+LibVLC actually resolved on this machine; *Copy Diagnostics* puts all of it on the clipboard for a bug
+report.
+
 ## Diagnostics
 
 Toggle **Options → Dump Scene Diagnostics** to write a per-scene table (every item's subtype,
 `enabled` flag, position, asset filename, and every item-enable script call) to
 `TLJExplorer_last_scene_items.txt` in the OS temp folder each time a scene folder is opened. Useful
 when a room renders the wrong sprite or picks a mid-animation frame.
+
+**Help → Open Log File** opens the app's own log (`TLJExplorer.log` in the OS temp folder).
 
 ## Status
 

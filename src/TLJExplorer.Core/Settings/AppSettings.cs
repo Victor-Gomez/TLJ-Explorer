@@ -112,6 +112,34 @@ public sealed class AppSettings
     public string? ExternalModsDir { get; set; }
 
     /// <summary>
+    /// Whether the app checks GitHub for a newer release on startup. <c>Ask</c> (the default) means the
+    /// user hasn't decided yet and gets a one-time prompt on first launch; <c>OnStartup</c> checks at most
+    /// once a day; <c>Never</c> only checks when Help &gt; Check for Updates is clicked. Nothing leaves the
+    /// machine until this reads <c>OnStartup</c> or the user asks explicitly.
+    /// </summary>
+    public string UpdateCheckMode { get; set; } = "Ask";
+
+    /// <summary>
+    /// When the last successful update check ran. Startup checks are skipped if this is under a day old,
+    /// so the app stays well inside GitHub's 60-requests-per-hour unauthenticated rate limit.
+    /// <c>null</c> means "never checked".
+    /// </summary>
+    public DateTime? LastUpdateCheckUtc { get; set; }
+
+    /// <summary>
+    /// Release tag the user dismissed with "Skip this version". Startup checks stay quiet about this exact
+    /// version but still report anything newer. <c>null</c> means nothing is being skipped.
+    /// </summary>
+    public string? SkippedUpdateVersion { get; set; }
+
+    /// <summary>
+    /// The release feed the update check reads, expected to answer in GitHub's
+    /// <c>/releases/latest</c> JSON shape. Configurable so a fork can point at its own repo without a
+    /// code change.
+    /// </summary>
+    public string ReleaseFeedUrl { get; set; } = "https://api.github.com/repos/Victor-Gomez/TLJ-Explorer/releases/latest";
+
+    /// <summary>
     /// Registers <paramref name="install"/> as the most-recent install and trims the list to 5 entries.
     /// Case-insensitive dedupe on absolute path; existing entries move to the front.
     /// </summary>

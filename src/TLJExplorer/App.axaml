@@ -47,6 +47,11 @@
                          the two can't drift out of sync. -->
                     <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="{DynamicResource SystemAccentColor}"/>
 
+                    <!-- Selected-segment fill for Border.segmented pickers (the compare view's mode
+                         switch). The dark palette's accent is a light blue, so its text must be dark. -->
+                    <SolidColorBrush x:Key="SegmentSelectedBackgroundBrush" Color="#FF60CDFF"/>
+                    <SolidColorBrush x:Key="SegmentSelectedForegroundBrush" Color="#FF0A1A24"/>
+
                     <!--
                         Avalonia FluentTheme's own built-in TextBox/ComboBox templates don't use the WinUI2
                         card tokens above at all, they use their own TextControl*/ComboBox* keys, which
@@ -80,6 +85,9 @@
                     <SolidColorBrush x:Key="SubtleFillColorSecondaryBrush" Color="#09000000"/>
                     <SolidColorBrush x:Key="SubtleFillColorTertiaryBrush" Color="#0F000000"/>
                     <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="{DynamicResource SystemAccentColor}"/>
+
+                    <SolidColorBrush x:Key="SegmentSelectedBackgroundBrush" Color="#FF005FB8"/>
+                    <SolidColorBrush x:Key="SegmentSelectedForegroundBrush" Color="#FFFFFFFF"/>
 
                     <StaticResource x:Key="TextControlBackground" ResourceKey="CardBackgroundFillColorDefaultBrush"/>
                     <StaticResource x:Key="TextControlBorderBrush" ResourceKey="ControlStrokeColorDefaultBrush"/>

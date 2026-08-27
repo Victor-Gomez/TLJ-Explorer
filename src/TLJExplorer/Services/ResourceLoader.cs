@@ -72,11 +72,16 @@ public static class ResourceLoader
             using Stream stream = OpenBuffered(vfs, node, variant);
             string ext = EffectiveExtension(node, vfs, variant);
 
+            // Note the mod-side extensions sitting next to the archive ones: when a mod overrides an
+            // entry, the extension we dispatch on is the MOD file's, not the archive entry's (see
+            // EffectiveExtension). VirtualFileSystem.SwapArchiveToModCandidates decides which swaps are
+            // allowed -- .xmg->.png, .ovs->.ogg, .bbb/.sss->.bik/.smk -- so every one of those has to be
+            // routable here, or a modded entry silently falls through to the raw hex dump.
             return ext switch
             {
-                ".xmg" => LoadXmg(node, stream),
+                ".xmg" or ".png" => LoadXmg(node, stream),
                 ".tm" => LoadTm(node, stream, settings),
-                ".ovs" => LoadOvsSound(node, stream, tempFiles),
+                ".ovs" or ".ogg" => LoadOvsSound(node, stream, tempFiles),
                 ".isn" or ".iss" or ".ssn" or ".sn" => LoadIsnSound(node, stream, tempFiles),
                 ".sss" or ".smk" => LoadVideo(stream, tempFiles, ".smk", "Smacker"),
                 ".bbb" or ".bik" => LoadVideo(stream, tempFiles, ".bik", "Bink"),

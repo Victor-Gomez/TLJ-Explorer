@@ -66,6 +66,11 @@ public partial class SettingsPanel : UserControl
                 _ => 2, // Dark
             };
 
+            // "Ask" (first launch, question not yet answered) shows as the recommended startup check;
+            // whichever way the user leaves this combo persists a real answer, retiring the prompt.
+            UpdateCheckCombo.SelectedIndex = _settings.UpdateCheckMode == "Never" ? 1 : 0;
+            UpdateLastCheckText();
+
             UpdateExternalModsPathText();
             UpdateFfmpegPathText();
         }
@@ -101,6 +106,7 @@ public partial class SettingsPanel : UserControl
         ToolsSection.IsVisible       = tag == "Tools";
         DiagnosticsSection.IsVisible = tag == "Diagnostics";
         AppearanceSection.IsVisible  = tag == "Appearance";
+        UpdatesSection.IsVisible     = tag == "Updates";
     }
 
     private void Close_Click(object? sender, RoutedEventArgs e) => Hide();
@@ -168,6 +174,37 @@ public partial class SettingsPanel : UserControl
             _owner.ApplyTheme(theme);
         }
     }
+
+    private void UpdateCheck_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_initializing || _settings is null) return;
+        if (UpdateCheckCombo.SelectedItem is ComboBoxItem { Tag: string mode })
+        {
+            _settings.UpdateCheckMode = mode;
+            _settings.Save();
+        }
+    }
+
+    private async void CheckForUpdatesNow_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_owner is null || _settings is null) return;
+
+        CheckNowButton.IsEnabled = false;
+        try
+        {
+            await UpdateUi.CheckInteractiveAsync(_owner, _settings);
+        }
+        finally
+        {
+            CheckNowButton.IsEnabled = true;
+            UpdateLastCheckText();
+        }
+    }
+
+    private void UpdateLastCheckText() =>
+        LastUpdateCheckText.Text = _settings?.LastUpdateCheckUtc is { } last
+            ? $"Version {AppInfo.DisplayVersion}. Last checked {last.ToLocalTime():g}."
+            : $"Version {AppInfo.DisplayVersion}. Never checked.";
 
     private async void SelectExternalMods_Click(object? sender, RoutedEventArgs e)
     {

@@ -1,3 +1,4 @@
+using TLJExplorer.Core.FileSystem;
 using TLJExplorer.Services;
 using Xunit;
 
@@ -5,11 +6,15 @@ namespace TLJExplorer.Tests;
 
 public class ResourceTypeFilterTests
 {
+    /// <summary>Matches() takes a whole node so filters can key off more than the extension; these
+    /// extension-only cases just need a node carrying the name.</summary>
+    private static FsNode File(string name) => new() { Name = name, NodeType = FsNodeType.File };
+
     [Fact]
     public void All_MatchesEveryFileName()
     {
-        Assert.True(ResourceTypeFilter.All.Matches("anything.xmg"));
-        Assert.True(ResourceTypeFilter.All.Matches("no-extension"));
+        Assert.True(ResourceTypeFilter.All.Matches(File("anything.xmg")));
+        Assert.True(ResourceTypeFilter.All.Matches(File("no-extension")));
     }
 
     [Theory]
@@ -20,7 +25,7 @@ public class ResourceTypeFilterTests
     public void ImagesCategory_MatchesOnlyItsExtensions(string fileName, bool expected)
     {
         ResourceTypeFilter images = ResourceTypeFilter.Categories.Single(c => c.Label.StartsWith("Images"));
-        Assert.Equal(expected, images.Matches(fileName));
+        Assert.Equal(expected, images.Matches(File(fileName)));
     }
 
     [Theory]
@@ -32,7 +37,7 @@ public class ResourceTypeFilterTests
     public void SoundsCategory_MatchesAllSoundExtensions(string fileName)
     {
         ResourceTypeFilter sounds = ResourceTypeFilter.Categories.Single(c => c.Label.StartsWith("Sounds"));
-        Assert.True(sounds.Matches(fileName));
+        Assert.True(sounds.Matches(File(fileName)));
     }
 
     [Fact]

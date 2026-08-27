@@ -95,6 +95,7 @@
                         <ListBoxItem Classes="settingsNav" Content="External Tools" Tag="Tools"/>
                         <ListBoxItem Classes="settingsNav" Content="Diagnostics" Tag="Diagnostics"/>
                         <ListBoxItem Classes="settingsNav" Content="Appearance" Tag="Appearance"/>
+                        <ListBoxItem Classes="settingsNav" Content="Updates" Tag="Updates"/>
                     </ListBox>
 
                     <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
@@ -253,6 +254,38 @@
                                         <StackPanel>
                                             <TextBlock Text="Choose your mode" Classes="settingTitle"/>
                                             <TextBlock Text="Change the colors that appear in the app." Classes="settingSubtitle"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </StackPanel>
+
+                            <!-- Updates -->
+                            <StackPanel x:Name="UpdatesSection" IsVisible="False">
+                                <TextBlock Text="Updates" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                                <TextBlock Text="Whether the app looks for newer releases. Nothing is ever downloaded or installed automatically."
+                                           Opacity="0.7" Margin="0,0,0,16"/>
+
+                                <Border Classes="settingCard">
+                                    <DockPanel>
+                                        <ComboBox x:Name="UpdateCheckCombo" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="180"
+                                                  SelectionChanged="UpdateCheck_SelectionChanged">
+                                            <ComboBoxItem Content="Check on startup" Tag="OnStartup"/>
+                                            <ComboBoxItem Content="Only when I ask"  Tag="Never"/>
+                                        </ComboBox>
+                                        <StackPanel>
+                                            <TextBlock Text="Check for updates" Classes="settingTitle"/>
+                                            <TextBlock Text="Startup checks contact github.com at most once a day and read only the latest release number." Classes="settingSubtitle"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+
+                                <Border Classes="settingCard">
+                                    <DockPanel>
+                                        <Button x:Name="CheckNowButton" DockPanel.Dock="Right" Content="Check Now" Padding="16,4" Margin="12,0,0,0"
+                                                Click="CheckForUpdatesNow_Click"/>
+                                        <StackPanel>
+                                            <TextBlock Text="Check now" Classes="settingTitle"/>
+                                            <TextBlock x:Name="LastUpdateCheckText" Classes="settingSubtitle"/>
                                         </StackPanel>
                                     </DockPanel>
                                 </Border>

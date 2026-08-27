@@ -36,6 +36,10 @@ jobs:
         run: |
           $tag = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF -replace '^refs/tags/','' } else { '${{ inputs.tag }}' }
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          # Assembly Version wants a bare numeric x.y.z -- strip the leading "v" and any -prerelease
+          # suffix, which only InformationalVersion can carry.
+          $version = ($tag -replace '^v','') -replace '-.*$',''
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Publish
         shell: pwsh
@@ -43,6 +47,8 @@ jobs:
           dotnet publish src/TLJExplorer/TLJExplorer.csproj `
             -c Release -r ${{ matrix.rid }} --self-contained true `
             -p:DebugType=none -p:DebugSymbols=false `
+            -p:Version=${{ steps.tag.outputs.version }} `
+            -p:InformationalVersion=${{ steps.tag.outputs.version }}+${{ github.sha }} `
             -o publish
 
       - name: Package (Windows)

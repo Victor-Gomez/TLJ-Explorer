@@ -30,6 +30,11 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <!-- Bumped per release. The release workflow overrides both with -p:Version=/-p:InformationalVersion=
+         derived from the pushed tag, so a published build reports the tag it was built from; a local
+         build reports whatever is checked in here. Help > About and the update check both read these. -->
+    <Version>1.1.0</Version>
+    <InformationalVersion>1.1.0-dev</InformationalVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>

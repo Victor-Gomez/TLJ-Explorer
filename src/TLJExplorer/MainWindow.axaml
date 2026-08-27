@@ -41,34 +41,64 @@
         <!-- Order matters: the TreeViewItem style below references this ContextMenu via StaticResource,
              which resolves at parse time. If the ContextMenu isn't defined FIRST, the setter picks up
              an unset value and every right-click on a tree row throws. -->
-        <ContextMenu x:Key="TreeItemContextMenu">
-            <MenuItem Header="_Copy Path" Click="TreeContextCopyPath_Click"/>
-            <MenuItem Header="_Reveal in Explorer" Click="TreeContextRevealInExplorer_Click"
+        <!-- Entries are shown/hidden per right-clicked node in TreeContextMenu_Opening; see
+             TreeContextActions for the rules. Everything is named so that handler can address it. -->
+        <ContextMenu x:Key="TreeItemContextMenu" Opening="TreeContextMenu_Opening">
+            <MenuItem x:Name="TreeMenuCopyPath" Header="_Copy Path" Click="TreeContextCopyPath_Click"/>
+            <MenuItem x:Name="TreeMenuReveal" Header="_Reveal in Explorer" Click="TreeContextRevealInExplorer_Click"
                       ToolTip.Tip="Only works for loose (non-archived) files."/>
-            <Separator/>
-            <MenuItem Header="Play _Localized Variant" Click="TreeContextPlayLocalized_Click"
+            <Separator x:Name="TreeMenuModSeparator"/>
+            <MenuItem x:Name="TreeMenuPlayLocalized" Header="Play _Localized Variant" Click="TreeContextPlayLocalized_Click"
                       ToolTip.Tip="If a sibling entry with the same name is marked localised, open and play it.">
                 <MenuItem.Icon>
                     <Image Source="{StaticResource LanguagesIcon}" Width="14" Height="14"/>
                 </MenuItem.Icon>
             </MenuItem>
-            <MenuItem Header="View _Original (bypass mod)" Click="TreeContextViewOriginal_Click"
+            <MenuItem x:Name="TreeMenuViewOriginal" Header="View _Original (bypass mod)" Click="TreeContextViewOriginal_Click"
                       ToolTip.Tip="Load this entry from the archive, ignoring any mod override.">
                 <MenuItem.Icon>
                     <Image Source="{StaticResource EyeIcon}" Width="14" Height="14"/>
                 </MenuItem.Icon>
             </MenuItem>
-            <MenuItem Header="Compare Original vs _Mod..." Click="TreeContextCompareMod_Click"
+            <MenuItem x:Name="TreeMenuCompareMod" Header="Compare Original vs _Mod..." Click="TreeContextCompareMod_Click"
                       ToolTip.Tip="Open the compare view with the original archive bytes on one side and the mod override on the other."/>
-            <MenuItem Header="E_xtract as Mod" Click="TreeContextExtractAsMod_Click"
+            <MenuItem x:Name="TreeMenuExtractAsMod" Header="E_xtract as Mod" Click="TreeContextExtractAsMod_Click"
                       ToolTip.Tip="Copy this file's bytes into &lt;archiveDir&gt;/xarc/&lt;name&gt; so it becomes a modifiable override the game will pick up (ScummVM Stark's mod convention).">
                 <MenuItem.Icon>
                     <Image Source="{StaticResource PlusIcon}" Width="14" Height="14"/>
                 </MenuItem.Icon>
             </MenuItem>
-            <Separator/>
-            <MenuItem Header="_Export This Item..." Click="TreeContextExportItem_Click"/>
-            <MenuItem Header="_Batch Export This Folder..." Click="TreeContextBatchExport_Click"/>
+            <Separator x:Name="TreeMenuExportSeparator"/>
+            <MenuItem x:Name="TreeMenuExportItem" Header="_Export This Item..." Click="TreeContextExportItem_Click"
+                      ToolTip.Tip="Export the decoded resource (images to TGA/PNG, sounds to WAV, models to glTF)."/>
+            <MenuItem x:Name="TreeMenuExportRaw" Header="Export Ra_w..." Click="TreeContextExportRaw_Click"
+                      ToolTip.Tip="Write the underlying file bytes verbatim, keeping the original extension."/>
+            <MenuItem x:Name="TreeMenuBatchExport" Header="_Batch Export This Folder..." Click="TreeContextBatchExport_Click"
+                      ToolTip.Tip="Recursively export every recognised file under this folder."/>
+        </ContextMenu>
+
+        <!-- Preview canvas menu. Entries are shown/hidden per loaded resource in
+             PreviewContextMenu_Opening; see PreviewContextActions for the rules. -->
+        <ContextMenu x:Key="PreviewContextMenu" Opening="PreviewContextMenu_Opening">
+            <MenuItem x:Name="PreviewMenuZoomIn" Header="Zoom _In" Click="PreviewZoomIn_Click" InputGesture="Ctrl+Plus"/>
+            <MenuItem x:Name="PreviewMenuZoomOut" Header="Zoom _Out" Click="PreviewZoomOut_Click" InputGesture="Ctrl+Minus"/>
+            <MenuItem x:Name="PreviewMenuFit" Header="_Fit to Window" Click="PreviewResetZoom_Click"/>
+            <MenuItem x:Name="PreviewMenuResetView" Header="_Reset View" Click="ModelResetView_Click"
+                      ToolTip.Tip="Return the 3D camera to its default orientation and distance."/>
+            <MenuItem x:Name="PreviewMenuWireframe" Header="_Wireframe" ToggleType="CheckBox" Click="PreviewWireframe_Click"
+                      ToolTip.Tip="Overlay the mesh wireframe on the shaded model."/>
+            <MenuItem x:Name="PreviewMenuCopySelection" Header="_Copy Selection" Click="PreviewCopySelection_Click"/>
+            <MenuItem x:Name="PreviewMenuCopyText" Header="Copy _All Text" Click="PreviewCopyAllText_Click"/>
+            <MenuItem x:Name="PreviewMenuOpenExternal" Header="Open in _External Player" Click="OpenExternalButton_Click"/>
+            <Separator x:Name="PreviewMenuViewSeparator"/>
+            <MenuItem x:Name="PreviewMenuExport" Header="_Export..." Click="Export_Click" InputGesture="Ctrl+E"
+                      ToolTip.Tip="Export the decoded resource (images to TGA/PNG, sounds to WAV, models to glTF)."/>
+            <MenuItem x:Name="PreviewMenuExportRaw" Header="Export Ra_w..." Click="ExportRaw_Click"
+                      ToolTip.Tip="Write the underlying file bytes verbatim, keeping the original extension."/>
+            <Separator x:Name="PreviewMenuPathSeparator"/>
+            <MenuItem x:Name="PreviewMenuCopyPath" Header="Copy _Path" Click="PreviewCopyPath_Click"/>
+            <MenuItem x:Name="PreviewMenuReveal" Header="Reveal in Explore_r" Click="PreviewReveal_Click"
+                      ToolTip.Tip="Only works for loose (non-archived) files."/>
         </ContextMenu>
     </Window.Resources>
 
@@ -76,6 +106,48 @@
         <Style Selector="TreeViewItem">
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
             <Setter Property="ContextMenu" Value="{StaticResource TreeItemContextMenu}"/>
+        </Style>
+
+        <!-- Segmented (pill) picker: a bordered strip of ToggleButtons that reads as one control, with
+             only the outer corners rounded and a single shared divider between segments. Used for the
+             compare view's mode switch. Mutual exclusion is driven in code-behind, not by a RadioButton
+             GroupName: a RadioButton's Checked event fires BEFORE the group unchecks its siblings, so a
+             handler that reads a sibling's IsChecked sees stale state. -->
+        <Style Selector="Border.segmented">
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#33808080"/>
+            <Setter Property="ClipToBounds" Value="True"/>
+        </Style>
+        <Style Selector="Border.segmented ToggleButton">
+            <Setter Property="CornerRadius" Value="0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="14,4"/>
+            <Setter Property="MinWidth" Value="0"/>
+            <Setter Property="VerticalAlignment" Value="Stretch"/>
+        </Style>
+        <!-- Separator between adjacent segments: a left border on every segment but the first. -->
+        <Style Selector="Border.segmented ToggleButton.divided">
+            <Setter Property="BorderThickness" Value="1,0,0,0"/>
+            <Setter Property="BorderBrush" Value="#33808080"/>
+        </Style>
+        <!-- Set the button's own Background/Foreground rather than reaching into the template with
+             /template/: Fluent's ToggleButton template already TemplateBinds its ContentPresenter to
+             these, and a setter aimed at the presenter competes with that binding instead of winning.
+             Brush resources, not SystemAccentColor*: those keys hold Colors, and a Color assigned to a
+             Brush property via DynamicResource silently doesn't apply. -->
+        <Style Selector="Border.segmented ToggleButton:checked">
+            <Setter Property="Background" Value="{DynamicResource SegmentSelectedBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource SegmentSelectedForegroundBrush}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style Selector="Border.segmented ToggleButton:checked:pointerover">
+            <Setter Property="Background" Value="{DynamicResource SegmentSelectedBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource SegmentSelectedForegroundBrush}"/>
+        </Style>
+        <Style Selector="Border.segmented ToggleButton:not(:checked):pointerover">
+            <Setter Property="Background" Value="#22808080"/>
         </Style>
     </Window.Styles>
 
@@ -101,7 +173,31 @@
                 <Separator/>
                 <MenuItem Header="_Settings..." Click="OpenSettings_Click" InputGesture="Ctrl+OemComma"/>
             </MenuItem>
+            <MenuItem Header="_Help">
+                <MenuItem Header="_Check for Updates..." Click="CheckForUpdates_Click"
+                          ToolTip.Tip="Ask GitHub whether a newer release exists. Nothing is downloaded or installed automatically."/>
+                <MenuItem Header="Open _Log File" Click="OpenLogFile_Click"
+                          ToolTip.Tip="Open the diagnostic log the app writes to the temp folder."/>
+                <Separator/>
+                <MenuItem Header="_About TLJ Explorer..." Click="About_Click"/>
+            </MenuItem>
         </Menu>
+
+        <!-- Startup update notice. A strip rather than a modal: a dialog in front of the window on launch
+             would block the user from the thing they actually opened the app to do. -->
+        <Border x:Name="UpdateBanner" DockPanel.Dock="Top" IsVisible="False"
+                Padding="10,6" Background="#332F81F7" BorderBrush="#662F81F7" BorderThickness="0,0,0,1">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+                    <Button Content="Download" Click="UpdateBannerDownload_Click" Padding="12,3"/>
+                    <Button Content="Skip This Version" Click="UpdateBannerSkip_Click" Padding="12,3"
+                            ToolTip.Tip="Stop mentioning this particular version. Newer ones will still be reported."/>
+                    <Button Content="Dismiss" Click="UpdateBannerDismiss_Click" Padding="12,3"
+                            ToolTip.Tip="Hide this notice for now."/>
+                </StackPanel>
+                <TextBlock x:Name="UpdateBannerText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+            </DockPanel>
+        </Border>
 
         <!-- Avalonia has no built-in StatusBar control; a Border+DockPanel row stands in for it. -->
         <Border DockPanel.Dock="Bottom" Padding="6,3" BorderThickness="0,1,0,0" BorderBrush="#22FFFFFF">
@@ -161,7 +257,7 @@
 
             <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" ResizeDirection="Columns"/>
 
-            <Grid Grid.Column="2" Margin="8">
+            <Grid Grid.Column="2" Margin="8" ContextMenu="{StaticResource PreviewContextMenu}">
 
                 <!-- Image resources: XMG (single) and TM (possibly many named sub-images). -->
                 <DockPanel x:Name="ImagePanel" IsVisible="False">
@@ -231,10 +327,16 @@
 
                         <DockPanel Grid.Row="0">
                             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
-                                <RadioButton x:Name="ImageCompareWipeMode" Content="Wipe" GroupName="ImageCompareMode" IsChecked="True"
-                                             VerticalAlignment="Center" Margin="0,0,10,0" Checked="ImageCompareMode_Changed"/>
-                                <RadioButton x:Name="ImageCompareSideBySideMode" Content="Side-by-side" GroupName="ImageCompareMode"
-                                             VerticalAlignment="Center" Margin="0,0,14,0" Checked="ImageCompareMode_Changed"/>
+                                <Border Classes="segmented" VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <ToggleButton x:Name="ImageCompareWipeMode" Content="Wipe" IsChecked="True"
+                                                      Click="ImageCompareMode_Changed"
+                                                      ToolTip.Tip="Overlay both images and drag the divider to wipe between them."/>
+                                        <ToggleButton x:Name="ImageCompareSideBySideMode" Content="Side-by-side" Classes="divided"
+                                                      Click="ImageCompareMode_Changed"
+                                                      ToolTip.Tip="Show the original and the mod next to each other, with synchronised scrolling."/>
+                                    </StackPanel>
+                                </Border>
                                 <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="ImageCompareZoomReset_Click"
                                         Background="Transparent" BorderThickness="0" ToolTip.Tip="Fit to window">
                                     <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
@@ -444,6 +546,7 @@
                     </StackPanel>
                     <TextBox x:Name="TextPanel"
                              IsReadOnly="True"
+                             ContextMenu="{StaticResource PreviewContextMenu}"
                              FontFamily="Consolas" FontSize="12"
                              TextWrapping="NoWrap" AcceptsReturn="True"
                              ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
