@@ -35,7 +35,7 @@ public partial class App : Application
         // the process in a half-broken state. Environment.Exit is the fallback if something refuses to yield.
         Dispatcher.UIThread.UnhandledException += (_, args) =>
         {
-            Logger.Log($"Dispatcher.UnhandledException: {args.Exception}");
+            Log.Exception("Dispatcher.UnhandledException", args.Exception);
             args.Handled = true;
             try
             {
@@ -47,11 +47,11 @@ public partial class App : Application
         };
 
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
-            Logger.Log($"AppDomain.UnhandledException (terminating={args.IsTerminating}): {args.ExceptionObject}");
+            Log.Error($"AppDomain.UnhandledException (terminating={args.IsTerminating}): {args.ExceptionObject}");
 
         TaskScheduler.UnobservedTaskException += (_, args) =>
         {
-            Logger.Log($"UnobservedTaskException: {args.Exception}");
+            Log.Exception("UnobservedTaskException", args.Exception);
             args.SetObserved();
         };
 

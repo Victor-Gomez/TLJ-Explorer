@@ -8,6 +8,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using TLJExplorer.Services;
@@ -206,7 +207,14 @@ public partial class MainWindow : Window
         // always attaches at the default (bubble) routing strategy.
         AddHandler(KeyDownEvent, MainWindow_PreviewKeyDown, RoutingStrategies.Tunnel);
 
+        AddHandler(DragDrop.DragOverEvent, Window_DragOver);
+        AddHandler(DragDrop.DropEvent, Window_Drop);
+        Tree.AddHandler(PointerPressedEvent, Tree_DragSourcePointerPressed, RoutingStrategies.Tunnel);
+        Tree.AddHandler(PointerMovedEvent, Tree_DragSourcePointerMoved, RoutingStrategies.Tunnel);
+
         Loaded += MainWindow_Loaded;
+        RestoreWindowGeometry();
+        Closing += (_, _) => SaveWindowGeometry();
         Closed += (_, _) =>
         {
             // Guard on the backing field, not the lazy property: if the user never played a sound/video
@@ -297,6 +305,28 @@ public partial class MainWindow : Window
             OpenSettings_Click(this, new RoutedEventArgs());
             e.Handled = true;
         }
+        // Zoom: OemPlus/OemMinus are the main-row =/+ and -/_ keys, which report the same regardless of
+        // Shift, so Ctrl+= and Ctrl++ both land here. Add/Subtract cover the numeric keypad.
+        else if (ctrl && e.Key is Key.OemPlus or Key.Add)
+        {
+            PreviewZoomIn_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (ctrl && e.Key is Key.OemMinus or Key.Subtract)
+        {
+            PreviewZoomOut_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (ctrl && e.Key is Key.D0 or Key.NumPad0)
+        {
+            PreviewResetZoom_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (e.Key == Key.F1)
+        {
+            ShowShortcutsCheatSheet();
+            e.Handled = true;
+        }
         else if (!typingInSearchBox && e.Key == Key.Space)
         {
             // Context-aware: whichever panel is visible gets the space bar.
@@ -329,6 +359,185 @@ public partial class MainWindow : Window
             }
         }
     }
+
+    // ---- Drag and drop -------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Accepts a dropped folder as an install to open. Only folders qualify -- a dropped file has no
+    /// meaning here, and signalling None keeps the OS showing a "can't drop" cursor rather than letting
+    /// the user complete a gesture that then does nothing.
+    /// </summary>
+    private void Window_DragOver(object? sender, DragEventArgs e)
+    {
+        e.DragEffects = DroppedFolder(e) is null ? DragDropEffects.None : DragDropEffects.Copy;
+        e.Handled = true;
+    }
+
+    private async void Window_Drop(object? sender, DragEventArgs e)
+    {
+        e.Handled = true;
+
+        if (DroppedFolder(e) is not { } folder)
+            return;
+
+        _settings.BaseDir = folder;
+        _settings.RegisterRecentInstall(folder);
+        _settings.Save();
+        await InitVfsAsync(folder);
+        RefreshRecentInstallsMenu();
+    }
+
+    /// <summary>
+    /// The single dropped directory, or <see langword="null"/> when the payload isn't exactly one folder.
+    /// A multi-item drop is ambiguous -- which one is the install? -- so it's refused rather than guessed.
+    /// </summary>
+    private static string? DroppedFolder(DragEventArgs e)
+    {
+        var items = e.Data.GetFiles()?.ToList();
+        if (items is not { Count: 1 })
+            return null;
+
+        string? path = items[0].TryGetLocalPath();
+        return !string.IsNullOrEmpty(path) && Directory.Exists(path) ? path : null;
+    }
+
+    // Drag-out: press position is recorded so a drag only begins after the pointer has actually travelled,
+    // otherwise every click on a tree row would start one and selection would become unusable.
+    private Point? _treeDragOrigin;
+    private FsNode? _treeDragNode;
+    private bool _treeDragInProgress;
+
+    private void Tree_DragSourcePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (!e.GetCurrentPoint(Tree).Properties.IsLeftButtonPressed)
+            return;
+
+        _treeDragOrigin = e.GetPosition(Tree);
+        _treeDragNode = (e.Source as Control)?.DataContext as FsNodeViewModel is { } vm
+            ? vm.Node
+            : (e.Source as Control)?.FindAncestorOfType<TreeViewItem>()?.DataContext is FsNodeViewModel ancestor
+                ? ancestor.Node
+                : null;
+    }
+
+    private async void Tree_DragSourcePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_treeDragInProgress || _treeDragOrigin is not { } origin || _treeDragNode is not { } node || _vfs is null)
+            return;
+
+        if (!e.GetCurrentPoint(Tree).Properties.IsLeftButtonPressed)
+        {
+            _treeDragOrigin = null;
+            return;
+        }
+
+        Point current = e.GetPosition(Tree);
+        if (Math.Abs(current.X - origin.X) < DragThreshold && Math.Abs(current.Y - origin.Y) < DragThreshold)
+            return;
+
+        // Folders can hold thousands of entries; exporting one synchronously before the drag visual even
+        // appears would look like a freeze. Those keep the "Batch Export This Folder..." menu entry.
+        if ((node.NodeType & FsNodeType.File) == 0)
+            return;
+
+        _treeDragInProgress = true;
+        _treeDragOrigin = null;
+
+        try
+        {
+            SetStatus($"Preparing \"{node.DisplayName}\" for drag...");
+            VirtualFileSystem vfs = _vfs;
+            string? staged = await Task.Run(() => DragDropStaging.Stage(node, vfs, _tempFiles));
+            if (staged is null)
+            {
+                SetStatus($"Could not prepare \"{node.DisplayName}\" for drag.");
+                return;
+            }
+
+            IStorageFile? dragFile = await StorageProvider.TryGetFileFromPathAsync(staged);
+            if (dragFile is null)
+            {
+                SetStatus($"Could not prepare \"{node.DisplayName}\" for drag.");
+                return;
+            }
+
+            var data = new DataObject();
+            data.Set(DataFormats.Files, new[] { dragFile });
+
+            SetStatus($"Drag \"{Path.GetFileName(staged)}\" to a folder to export it.");
+            await DragDrop.DoDragDrop(e, data, DragDropEffects.Copy);
+        }
+        catch (Exception ex)
+        {
+            Log.Exception($"Drag-out of '{node.GetPath()}' failed", ex);
+        }
+        finally
+        {
+            _treeDragInProgress = false;
+        }
+    }
+
+    /// <summary>Pointer travel, in pixels, before a press on a tree row turns into a drag.</summary>
+    private const double DragThreshold = 6.0;
+
+    // ---- Window geometry ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Last known bounds while in the Normal state. Tracked continuously because once the window is
+    /// maximized its own Position/Width/Height report the maximized frame -- so reading them at close
+    /// time would persist the maximized bounds as the restore bounds, and un-maximizing on the next
+    /// launch would snap to full screen anyway.
+    /// </summary>
+    private PixelRect? _normalBounds;
+
+    private void RestoreWindowGeometry()
+    {
+        PixelRect? saved = WindowGeometry.FromSettings(
+            _settings.WindowX, _settings.WindowY, _settings.WindowWidth, _settings.WindowHeight);
+
+        if (saved is { } bounds && WindowGeometry.IsRestorable(bounds, ScreenBounds()))
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Position = bounds.Position;
+            Width = bounds.Width;
+            Height = bounds.Height;
+            _normalBounds = bounds;
+        }
+
+        if (_settings.WindowMaximized)
+            WindowState = WindowState.Maximized;
+
+        // Track the restore bounds as they change rather than sampling once at close.
+        PositionChanged += (_, _) => CaptureNormalBounds();
+        SizeChanged += (_, _) => CaptureNormalBounds();
+    }
+
+    private void CaptureNormalBounds()
+    {
+        if (WindowState != WindowState.Normal)
+            return;
+
+        _normalBounds = new PixelRect(Position.X, Position.Y, (int)Width, (int)Height);
+    }
+
+    private void SaveWindowGeometry()
+    {
+        if (_normalBounds is { } bounds)
+        {
+            _settings.WindowX = bounds.X;
+            _settings.WindowY = bounds.Y;
+            _settings.WindowWidth = bounds.Width;
+            _settings.WindowHeight = bounds.Height;
+        }
+
+        // Minimized is not worth restoring -- the user would reopen to a window they can't see.
+        _settings.WindowMaximized = WindowState == WindowState.Maximized;
+        _settings.Save();
+    }
+
+    /// <summary>Bounds of every attached screen, or an empty list when the platform reports none.</summary>
+    private IReadOnlyList<PixelRect> ScreenBounds() =>
+        Screens?.All?.Select(s => s.Bounds).ToList() ?? [];
 
     private async void MainWindow_Loaded(object? sender, RoutedEventArgs e)
     {
@@ -1662,6 +1871,27 @@ public partial class MainWindow : Window
 
     private async void About_Click(object? sender, RoutedEventArgs e) =>
         await new AboutWindow(_settings).ShowDialog(this);
+
+    private void Shortcuts_Click(object? sender, RoutedEventArgs e) => ShowShortcutsCheatSheet();
+
+    /// <summary>
+    /// Opens the F1 cheat sheet, or brings the existing one forward. Held as a field so repeated F1
+    /// presses don't stack copies of the same window.
+    /// </summary>
+    private ShortcutsWindow? _shortcutsWindow;
+
+    private void ShowShortcutsCheatSheet()
+    {
+        if (_shortcutsWindow is not null)
+        {
+            _shortcutsWindow.Activate();
+            return;
+        }
+
+        _shortcutsWindow = new ShortcutsWindow();
+        _shortcutsWindow.Closed += (_, _) => _shortcutsWindow = null;
+        _shortcutsWindow.Show(this);
+    }
 
     private async void CheckForUpdates_Click(object? sender, RoutedEventArgs e) =>
         await UpdateUi.CheckInteractiveAsync(this, _settings);

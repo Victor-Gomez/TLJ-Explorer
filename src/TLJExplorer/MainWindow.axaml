@@ -7,6 +7,7 @@
         xmlns:vlc="clr-namespace:LibVLCSharp.Avalonia;assembly=LibVLCSharp.Avalonia"
         Title="TLJ Explorer" Height="720" Width="1180"
         WindowStartupLocation="CenterScreen"
+        DragDrop.AllowDrop="True"
         Icon="avares://TLJExplorer/Assets/TLJExplorer.ico">
 
     <Window.DataTemplates>
@@ -80,9 +81,9 @@
         <!-- Preview canvas menu. Entries are shown/hidden per loaded resource in
              PreviewContextMenu_Opening; see PreviewContextActions for the rules. -->
         <ContextMenu x:Key="PreviewContextMenu" Opening="PreviewContextMenu_Opening">
-            <MenuItem x:Name="PreviewMenuZoomIn" Header="Zoom _In" Click="PreviewZoomIn_Click"/>
-            <MenuItem x:Name="PreviewMenuZoomOut" Header="Zoom _Out" Click="PreviewZoomOut_Click"/>
-            <MenuItem x:Name="PreviewMenuFit" Header="_Fit to Window" Click="PreviewResetZoom_Click"/>
+            <MenuItem x:Name="PreviewMenuZoomIn" Header="Zoom _In" Click="PreviewZoomIn_Click" InputGesture="Ctrl+OemPlus"/>
+            <MenuItem x:Name="PreviewMenuZoomOut" Header="Zoom _Out" Click="PreviewZoomOut_Click" InputGesture="Ctrl+OemMinus"/>
+            <MenuItem x:Name="PreviewMenuFit" Header="_Fit to Window" Click="PreviewResetZoom_Click" InputGesture="Ctrl+D0"/>
             <MenuItem x:Name="PreviewMenuResetView" Header="_Reset View" Click="ModelResetView_Click"
                       ToolTip.Tip="Return the 3D camera to its default orientation and distance."/>
             <MenuItem x:Name="PreviewMenuWireframe" Header="_Wireframe" ToggleType="CheckBox" Click="PreviewWireframe_Click"
@@ -176,6 +177,7 @@
             <MenuItem Header="_Help">
                 <MenuItem Header="_Check for Updates..." Click="CheckForUpdates_Click"
                           ToolTip.Tip="Ask GitHub whether a newer release exists. Nothing is downloaded or installed automatically."/>
+                <MenuItem Header="_Keyboard Shortcuts" Click="Shortcuts_Click" InputGesture="F1"/>
                 <MenuItem Header="Open _Log File" Click="OpenLogFile_Click"
                           ToolTip.Tip="Open the diagnostic log the app writes to the temp folder."/>
                 <Separator/>

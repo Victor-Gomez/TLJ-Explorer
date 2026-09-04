@@ -14,7 +14,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Logger.Log($"Fatal startup exception: {ex}");
+            Log.Exception("Fatal startup exception", ex);
             throw;
         }
     }

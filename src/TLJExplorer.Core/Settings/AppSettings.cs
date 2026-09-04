@@ -140,6 +140,25 @@ public sealed class AppSettings
     public string ReleaseFeedUrl { get; set; } = "https://api.github.com/repos/Victor-Gomez/TLJ-Explorer/releases/latest";
 
     /// <summary>
+    /// Last non-maximized window bounds, restored on next launch. <c>null</c> means "never saved" -- the
+    /// window then falls back to its default size, centred. Stored as the *restore* bounds even when the
+    /// window was closed maximized, so un-maximizing lands somewhere sensible.
+    /// </summary>
+    public int? WindowX { get; set; }
+
+    /// <inheritdoc cref="WindowX"/>
+    public int? WindowY { get; set; }
+
+    /// <inheritdoc cref="WindowX"/>
+    public double? WindowWidth { get; set; }
+
+    /// <inheritdoc cref="WindowX"/>
+    public double? WindowHeight { get; set; }
+
+    /// <summary>Whether the window was maximized when it was last closed.</summary>
+    public bool WindowMaximized { get; set; }
+
+    /// <summary>
     /// Registers <paramref name="install"/> as the most-recent install and trims the list to 5 entries.
     /// Case-insensitive dedupe on absolute path; existing entries move to the front.
     /// </summary>
