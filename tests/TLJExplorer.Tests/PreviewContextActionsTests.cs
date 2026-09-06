@@ -1,3 +1,4 @@
+using Avalonia.Headless.XUnit;
 using Avalonia.Media.Imaging;
 using TLJExplorer.Core.FileSystem;
 using TLJExplorer.Core.Formats;
@@ -75,7 +76,9 @@ public class PreviewContextActionsTests
         Assert.False(actions.HasViewGroup);
     }
 
-    [Fact]
+    // [AvaloniaFact], not [Fact]: constructing a WriteableBitmap needs the Skia platform
+    // render interface, which only exists on the headless Avalonia app thread.
+    [AvaloniaFact]
     public void Scene_IsZoomableAndExportableButHasNoSingleFileRawBytes()
     {
         // A scene is composited from a whole folder, so "the underlying file" doesn't exist.
