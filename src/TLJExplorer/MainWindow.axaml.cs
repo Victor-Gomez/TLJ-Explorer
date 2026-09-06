@@ -393,7 +393,7 @@ public partial class MainWindow : Window
     /// </summary>
     private static string? DroppedFolder(DragEventArgs e)
     {
-        var items = e.Data.GetFiles()?.ToList();
+        var items = e.DataTransfer?.TryGetFiles()?.ToList();
         if (items is not { Count: 1 })
             return null;
 
@@ -461,11 +461,13 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var data = new DataObject();
-            data.Set(DataFormats.Files, new[] { dragFile });
+            // DataTransfer used as a drag source is disposed by the system when the drag
+            // completes -- must not be disposed here (see Avalonia DoDragDropAsync remarks).
+            var data = new DataTransfer();
+            data.Add(DataTransferItem.CreateFile(dragFile));
 
             SetStatus($"Drag \"{Path.GetFileName(staged)}\" to a folder to export it.");
-            await DragDrop.DoDragDrop(e, data, DragDropEffects.Copy);
+            await DragDrop.DoDragDropAsync(e, data, DragDropEffects.Copy);
         }
         catch (Exception ex)
         {
