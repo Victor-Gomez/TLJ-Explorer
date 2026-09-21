@@ -1635,8 +1635,20 @@ public partial class MainWindow : Window
         if (_vfs is null || aniNode.Parent is null)
             return false;
 
-        FsNode? cirNode = _vfs.GetFiles(aniNode.Parent).FirstOrDefault(f =>
-            string.Equals(Path.GetExtension(f.Name), ".cir", StringComparison.OrdinalIgnoreCase));
+        List<FsNode> siblingModels = _vfs.GetFiles(aniNode.Parent)
+            .Where(f => string.Equals(Path.GetExtension(f.Name), ".cir", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        FsNode? cirNode = null;
+        if (siblingModels.Count > 0)
+        {
+            cirNode = ModelAssetMatcher.FindMatchingModel(aniNode, siblingModels);
+        }
+        else if (_modelCatalog?.Models is { Count: > 0 } catalogModels)
+        {
+            cirNode = ModelAssetMatcher.FindMatchingModel(aniNode, catalogModels, fallbackToFirst: false);
+        }
+
         if (cirNode is null)
             return false;
 
@@ -3211,14 +3223,17 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>Looks for the first <c>.ani</c> file sitting directly next to <paramref name="cirNode"/> (same parent folder). Used to auto-select/auto-play a default animation as soon as a model is opened.</summary>
+    /// <summary>Looks for the best matching <c>.ani</c> file sitting directly next to <paramref name="cirNode"/> (same parent folder). Used to auto-select/auto-play a default animation as soon as a model is opened.</summary>
     private FsNode? FindDefaultAnimation(FsNode cirNode)
     {
         if (_vfs is null || cirNode.Parent is not { } parent)
             return null;
 
-        return _vfs.GetFiles(parent)
-            .FirstOrDefault(f => string.Equals(Path.GetExtension(f.Name), ".ani", StringComparison.OrdinalIgnoreCase));
+        List<FsNode> siblingAnimations = _vfs.GetFiles(parent)
+            .Where(f => string.Equals(Path.GetExtension(f.Name), ".ani", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        return ModelAssetMatcher.FindMatchingAnimation(cirNode, siblingAnimations);
     }
 
     // ---------------------------------------------------------------------
@@ -3261,10 +3276,14 @@ public partial class MainWindow : Window
 
             List<ModelPickItem> skinItems = BuildItems(skinCandidates, includeNone: true);
             SkinSelectorCombo.ItemsSource = skinItems;
-            // Prefer the first REAL skin over "(none)" so a freshly-loaded model shows textured out of
-            // the box. Falls back to "(none)" when no .tm sits next to the model. Skin choice still
-            // doesn't persist across model changes on purpose -- each model is reset to its own default.
-            ModelPickItem defaultSkinItem = skinItems.FirstOrDefault(i => i.Node is not null) ?? skinItems[0];
+            // Prefer a skin matching the model (by material texture reference or stem) over other candidates.
+            // Falls back to the first real skin, or "(none)" when no .tm sits next to the model.
+            FsNode? matchingSkin = ModelAssetMatcher.FindMatchingSkin(_currentModelNode, _currentModel, skinCandidates);
+            ModelPickItem defaultSkinItem = (matchingSkin is not null
+                ? skinItems.FirstOrDefault(i => i.Node == matchingSkin)
+                : null)
+                ?? skinItems.FirstOrDefault(i => i.Node is not null)
+                ?? skinItems[0];
             SkinSelectorCombo.SelectedItem = defaultSkinItem;
 
             List<ModelPickItem> animationItems = BuildItems(animationCandidates, includeNone: true);
@@ -3403,7 +3422,27 @@ public partial class MainWindow : Window
             int materialIndex = i;
             string textureName = model.Materials[i].TextureName;
 
-            if (namedImages is not null && namedImages.TryGetValue(textureName, out DecodedImage? named))
+            DecodedImage? named = null;
+            if (namedImages is not null)
+            {
+                if (!namedImages.TryGetValue(textureName, out named))
+                {
+                    string stem = Path.GetFileNameWithoutExtension(textureName);
+                    if (!namedImages.TryGetValue(stem, out named))
+                    {
+                        if (!namedImages.TryGetValue(stem + ".tm", out named))
+                        {
+                            if (namedImages.Values.FirstOrDefault() is { } singleImg &&
+                                namedImages.Values.Distinct().Count() == 1)
+                            {
+                                named = singleImg;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (named is not null)
             {
                 ModelViewerHost.SetMaterialTexture(materialIndex, named);
             }
@@ -3427,6 +3466,14 @@ public partial class MainWindow : Window
             {
                 string name = string.IsNullOrEmpty(entry.Name) ? Path.GetFileNameWithoutExtension(skinNode.Name) : entry.Name;
                 dict[name] = entry.Image;
+
+                string stem = Path.GetFileNameWithoutExtension(name);
+                dict[stem] = entry.Image;
+                dict[stem + ".tm"] = entry.Image;
+
+                string skinStem = Path.GetFileNameWithoutExtension(skinNode.Name);
+                dict[skinStem] = entry.Image;
+                dict[skinStem + ".tm"] = entry.Image;
             }
 
             return dict;

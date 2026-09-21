@@ -226,8 +226,11 @@ public static class BatchExporter
         if (cirNode.Parent is null)
             return null;
 
-        FsNode? aniNode = vfs.GetFiles(cirNode.Parent)
-            .FirstOrDefault(f => string.Equals(Path.GetExtension(f.Name), ".ani", StringComparison.OrdinalIgnoreCase));
+        List<FsNode> siblingAnis = vfs.GetFiles(cirNode.Parent)
+            .Where(f => string.Equals(Path.GetExtension(f.Name), ".ani", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        FsNode? aniNode = ModelAssetMatcher.FindMatchingAnimation(cirNode, siblingAnis);
         if (aniNode is null)
             return null;
 

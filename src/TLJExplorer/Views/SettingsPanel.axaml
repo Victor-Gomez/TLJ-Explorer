@@ -94,7 +94,6 @@
                         <ListBoxItem Classes="settingsNav" Content="Assets and Mods" Tag="Mods"/>
                         <ListBoxItem Classes="settingsNav" Content="External Tools" Tag="Tools"/>
                         <ListBoxItem Classes="settingsNav" Content="Diagnostics" Tag="Diagnostics"/>
-                        <ListBoxItem Classes="settingsNav" Content="Appearance" Tag="Appearance"/>
                         <ListBoxItem Classes="settingsNav" Content="Updates" Tag="Updates"/>
                     </ListBox>
 
@@ -104,10 +103,26 @@
                             <!-- Display -->
                             <StackPanel x:Name="DisplaySection">
                                 <TextBlock Text="Display" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                                <TextBlock Text="Rendering options for images, textures, and 3D previews."
+                                <TextBlock Text="Theme and rendering options for the application, textures, and 3D previews."
                                            Opacity="0.7" Margin="0,0,0,16"/>
 
-                                <TextBlock Text="Textures" Classes="sectionHeader" Margin="2,0,0,6"/>
+                                <TextBlock Text="Theme" Classes="sectionHeader" Margin="2,0,0,6"/>
+                                <Border Classes="settingCard">
+                                    <DockPanel>
+                                        <ComboBox x:Name="ThemeCombo" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="140"
+                                                  SelectionChanged="Theme_SelectionChanged">
+                                            <ComboBoxItem Content="Follow system" Tag="System"/>
+                                            <ComboBoxItem Content="Light"         Tag="Light"/>
+                                            <ComboBoxItem Content="Dark"          Tag="Dark"/>
+                                        </ComboBox>
+                                        <StackPanel>
+                                            <TextBlock Text="Choose your mode" Classes="settingTitle"/>
+                                            <TextBlock Text="Change the colors that appear in the app." Classes="settingSubtitle"/>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+
+                                <TextBlock Text="Textures" Classes="sectionHeader"/>
                                 <Border Classes="settingCard">
                                     <DockPanel>
                                         <CheckBox x:Name="ShowMipMapsCheck" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0"
@@ -237,27 +252,6 @@
                                 </Border>
                             </StackPanel>
 
-                            <!-- Appearance -->
-                            <StackPanel x:Name="AppearanceSection" IsVisible="False">
-                                <TextBlock Text="Appearance" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                                <TextBlock Text="Light or dark mode for the application chrome."
-                                           Opacity="0.7" Margin="0,0,0,16"/>
-
-                                <Border Classes="settingCard">
-                                    <DockPanel>
-                                        <ComboBox x:Name="ThemeCombo" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="140"
-                                                  SelectionChanged="Theme_SelectionChanged">
-                                            <ComboBoxItem Content="Follow system" Tag="System"/>
-                                            <ComboBoxItem Content="Light"         Tag="Light"/>
-                                            <ComboBoxItem Content="Dark"          Tag="Dark"/>
-                                        </ComboBox>
-                                        <StackPanel>
-                                            <TextBlock Text="Choose your mode" Classes="settingTitle"/>
-                                            <TextBlock Text="Change the colors that appear in the app." Classes="settingSubtitle"/>
-                                        </StackPanel>
-                                    </DockPanel>
-                                </Border>
-                            </StackPanel>
 
                             <!-- Updates -->
                             <StackPanel x:Name="UpdatesSection" IsVisible="False">

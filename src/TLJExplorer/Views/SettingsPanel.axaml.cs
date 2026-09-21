@@ -105,7 +105,6 @@ public partial class SettingsPanel : UserControl
         ModsSection.IsVisible        = tag == "Mods";
         ToolsSection.IsVisible       = tag == "Tools";
         DiagnosticsSection.IsVisible = tag == "Diagnostics";
-        AppearanceSection.IsVisible  = tag == "Appearance";
         UpdatesSection.IsVisible     = tag == "Updates";
     }
 
