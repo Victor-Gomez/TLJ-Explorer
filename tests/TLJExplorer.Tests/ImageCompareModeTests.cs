@@ -7,6 +7,8 @@ using Avalonia.VisualTree;
 using Avalonia.Controls.Primitives;
 using Avalonia.Headless.XUnit;
 using Avalonia.Interactivity;
+using TLJExplorer.Core.Formats;
+using TLJExplorer.Services;
 using Xunit;
 
 namespace TLJExplorer.Tests;
@@ -85,6 +87,122 @@ public class ImageCompareModeTests : UiTestBase
         Assert.True(wipe.IsChecked);
         Assert.False(side.IsChecked);
         Assert.True(wipeView.IsVisible);
+    }
+
+    private (MainWindow Window,
+             ToggleButton Wipe, ToggleButton Side, ToggleButton Onion, ToggleButton Diff,
+             Control WipeView, Control SideView, Control OnionView, Control DiffView,
+             Control OnionControls, Control DiffControls) BuildAll()
+    {
+        MainWindow window = Track(new MainWindow());
+        return (
+            window,
+            window.FindControl<ToggleButton>("ImageCompareWipeMode")!,
+            window.FindControl<ToggleButton>("ImageCompareSideBySideMode")!,
+            window.FindControl<ToggleButton>("ImageCompareOnionSkinMode")!,
+            window.FindControl<ToggleButton>("ImageCompareDifferenceMode")!,
+            window.FindControl<Control>("ImageCompareWipeScroll")!,
+            window.FindControl<Control>("ImageCompareSideBySideContainer")!,
+            window.FindControl<Control>("ImageCompareOnionSkinScroll")!,
+            window.FindControl<Control>("ImageCompareDifferenceScroll")!,
+            window.FindControl<Control>("ImageCompareOnionControls")!,
+            window.FindControl<Control>("ImageCompareDiffControls")!);
+    }
+
+    [AvaloniaFact]
+    public void SelectingOnionSkin_SwitchesTheVisibleViewAndControls()
+    {
+        var (window, wipe, side, onion, diff, wipeView, sideView, onionView, diffView, onionControls, diffControls) = BuildAll();
+        window.FindControl<Control>("ImageComparePanel")!.IsVisible = true;
+
+        ClickSegment(window, onion);
+
+        Assert.True(onion.IsChecked);
+        Assert.False(wipe.IsChecked);
+        Assert.False(side.IsChecked);
+        Assert.False(diff.IsChecked);
+
+        Assert.True(onionView.IsVisible);
+        Assert.False(wipeView.IsVisible);
+        Assert.False(sideView.IsVisible);
+        Assert.False(diffView.IsVisible);
+
+        Assert.True(onionControls.IsVisible);
+        Assert.False(diffControls.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public void SelectingDifference_SwitchesTheVisibleViewAndControls()
+    {
+        var (window, wipe, side, onion, diff, wipeView, sideView, onionView, diffView, onionControls, diffControls) = BuildAll();
+        window.FindControl<Control>("ImageComparePanel")!.IsVisible = true;
+
+        ClickSegment(window, diff);
+
+        Assert.True(diff.IsChecked);
+        Assert.False(wipe.IsChecked);
+        Assert.False(side.IsChecked);
+        Assert.False(onion.IsChecked);
+
+        Assert.True(diffView.IsVisible);
+        Assert.False(wipeView.IsVisible);
+        Assert.False(sideView.IsVisible);
+        Assert.False(onionView.IsVisible);
+
+        Assert.True(diffControls.IsVisible);
+        Assert.False(onionControls.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public void ClickingAlreadyActiveOnionSkin_KeepsItSelected()
+    {
+        var (window, _, _, onion, _, _, _, onionView, _, _, _) = BuildAll();
+        window.FindControl<Control>("ImageComparePanel")!.IsVisible = true;
+
+        ClickSegment(window, onion);
+        ClickSegment(window, onion);
+
+        Assert.True(onion.IsChecked);
+        Assert.True(onionView.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public void ClickingAlreadyActiveDifference_KeepsItSelected()
+    {
+        var (window, _, _, _, diff, _, _, _, diffView, _, _) = BuildAll();
+        window.FindControl<Control>("ImageComparePanel")!.IsVisible = true;
+
+        ClickSegment(window, diff);
+        ClickSegment(window, diff);
+
+        Assert.True(diff.IsChecked);
+        Assert.True(diffView.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public void OnionSkinSlider_UpdatesModImageOpacityAndLabel()
+    {
+        MainWindow window = Track(new MainWindow());
+        var slider = window.FindControl<Slider>("ImageCompareOnionSlider")!;
+        var label = window.FindControl<TextBlock>("ImageCompareOnionLabel")!;
+        var modImage = window.FindControl<Image>("ImageCompareOnionMod")!;
+
+        slider.Value = 75;
+
+        Assert.Equal(0.75, modImage.Opacity, 2);
+        Assert.Equal("75%", label.Text);
+    }
+
+    [AvaloniaFact]
+    public void DifferenceGainSlider_UpdatesGainLabel()
+    {
+        MainWindow window = Track(new MainWindow());
+        var slider = window.FindControl<Slider>("ImageCompareDiffGainSlider")!;
+        var label = window.FindControl<TextBlock>("ImageCompareDiffGainLabel")!;
+
+        slider.Value = 4;
+
+        Assert.Equal("4x", label.Text);
     }
 }
 

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-10
+
+### Added
+- **Image Comparison**: Added Onion Skin and Difference comparison modes alongside Wipe and Side-by-side.
+  - **Onion Skin**: Stack original and modded images with an adjustable opacity slider (0% to 100%).
+  - **Difference**: Pixel-by-pixel absolute difference visualization highlighting altered pixels, with an amplification gain slider (1x–10x) and differing pixel count statistics.
+
 ## [1.2.5] - 2026-10
 
 ### Added

@@ -98,6 +98,8 @@ public partial class MainWindow : Window
     private readonly ScaleTransform _imageCompareStageScale = new();
     private readonly ScaleTransform _imageCompareSideOriginalScale = new();
     private readonly ScaleTransform _imageCompareSideModScale = new();
+    private readonly ScaleTransform _imageCompareOnionScale = new();
+    private readonly ScaleTransform _imageCompareDiffScale = new();
     private readonly ScaleTransform _sceneScale = new();
     private readonly RectangleGeometry _imageCompareOriginalClip = new();
     private readonly RectangleGeometry _imageCompareModClip = new();
@@ -176,6 +178,8 @@ public partial class MainWindow : Window
         ImageCompareStageTransformHost.LayoutTransform = _imageCompareStageScale;
         ImageCompareSideOriginalTransformHost.LayoutTransform = _imageCompareSideOriginalScale;
         ImageCompareSideModTransformHost.LayoutTransform = _imageCompareSideModScale;
+        ImageCompareOnionSkinTransformHost.LayoutTransform = _imageCompareOnionScale;
+        ImageCompareDifferenceTransformHost.LayoutTransform = _imageCompareDiffScale;
         SceneTransformHost.LayoutTransform = _sceneScale;
         ImageCompareOriginalImage.Clip = _imageCompareOriginalClip;
         ImageCompareModImage.Clip = _imageCompareModClip;
@@ -235,6 +239,8 @@ public partial class MainWindow : Window
         ImageCompareWipeScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
         ImageCompareSideOriginalScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
         ImageCompareSideModScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+        ImageCompareOnionSkinScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
+        ImageCompareDifferenceScroll.AddHandler(PointerWheelChangedEvent, ImageCompare_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
         SceneScrollViewer.AddHandler(PointerWheelChangedEvent, SceneScrollViewer_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
         VideoScrollViewer.AddHandler(PointerWheelChangedEvent, VideoScrollViewer_PreviewPointerWheelChanged, RoutingStrategies.Tunnel);
 
@@ -252,6 +258,12 @@ public partial class MainWindow : Window
         ImageCompareSideModScroll.PointerPressed += ImageComparePanScroll_PointerPressed;
         ImageCompareSideModScroll.PointerMoved += ImageComparePanScroll_PointerMoved;
         ImageCompareSideModScroll.PointerReleased += ImageComparePanScroll_PointerReleased;
+        ImageCompareOnionSkinScroll.PointerPressed += ImageComparePanScroll_PointerPressed;
+        ImageCompareOnionSkinScroll.PointerMoved += ImageComparePanScroll_PointerMoved;
+        ImageCompareOnionSkinScroll.PointerReleased += ImageComparePanScroll_PointerReleased;
+        ImageCompareDifferenceScroll.PointerPressed += ImageComparePanScroll_PointerPressed;
+        ImageCompareDifferenceScroll.PointerMoved += ImageComparePanScroll_PointerMoved;
+        ImageCompareDifferenceScroll.PointerReleased += ImageComparePanScroll_PointerReleased;
 
         SceneScrollViewer.PointerPressed += SceneScrollViewer_PointerPressed;
         SceneScrollViewer.PointerMoved += SceneScrollViewer_PointerMoved;
@@ -2550,8 +2562,21 @@ public partial class MainWindow : Window
         }
     }
 
+    private enum ImageCompareMode
+    {
+        Wipe,
+        SideBySide,
+        OnionSkin,
+        Difference,
+    }
+
     private Bitmap? _compareOriginalBitmap;
     private Bitmap? _compareModBitmap;
+    private DecodedImage? _compareOriginal;
+    private DecodedImage? _compareMod;
+    private Bitmap? _compareDiffBitmap;
+    private int _compareDiffPixelCount;
+    private string? _compareBaseLabel;
     private double _compareWipeX;
     private double _compareZoom = 1.0;
     private bool _compareFitToWindow;
@@ -2561,6 +2586,8 @@ public partial class MainWindow : Window
 
     private void ShowImageCompare(ImageCompareResource compare)
     {
+        _compareOriginal = compare.Original;
+        _compareMod = compare.Modded;
         _compareOriginalBitmap = ToBitmap(compare.Original);
         _compareModBitmap = ToBitmap(compare.Modded);
 
@@ -2581,6 +2608,17 @@ public partial class MainWindow : Window
         ImageCompareSideOriginal.Width = _compareCanvasWidth; ImageCompareSideOriginal.Height = _compareCanvasHeight;
         ImageCompareSideMod.Width = _compareCanvasWidth; ImageCompareSideMod.Height = _compareCanvasHeight;
 
+        ImageCompareOnionOriginal.Source = _compareOriginalBitmap;
+        ImageCompareOnionMod.Source = _compareModBitmap;
+        ImageCompareOnionOriginal.Width = _compareCanvasWidth; ImageCompareOnionOriginal.Height = _compareCanvasHeight;
+        ImageCompareOnionMod.Width = _compareCanvasWidth; ImageCompareOnionMod.Height = _compareCanvasHeight;
+        ImageCompareOnionSkinStage.Width = _compareCanvasWidth; ImageCompareOnionSkinStage.Height = _compareCanvasHeight;
+        ImageCompareOnionMod.Opacity = ImageCompareOnionSlider.Value / 100.0;
+
+        ImageCompareDifferenceImage.Width = _compareCanvasWidth; ImageCompareDifferenceImage.Height = _compareCanvasHeight;
+        ImageCompareDifferenceStage.Width = _compareCanvasWidth; ImageCompareDifferenceStage.Height = _compareCanvasHeight;
+        UpdateDifferenceImage();
+
         _compareWipeX = _compareCanvasWidth / 2.0;
         // Panel is still hidden at this point, so the compare ScrollViewers have no Bounds yet --
         // ComputeCompareDefaultZoom would fall back to 1.0 and crop large images. Defer the fit
@@ -2588,8 +2626,9 @@ public partial class MainWindow : Window
         ApplyCompareDefaultZoomWhenReady();
         UpdateCompareClip();
 
-        ImageCompareLabel.Text = $"Comparing {compare.OriginalLabel} -- original {compare.Original.Width}x{compare.Original.Height}, " +
-                                 $"mod {compare.Modded.Width}x{compare.Modded.Height}, canvas {_compareCanvasWidth}x{_compareCanvasHeight}";
+        _compareBaseLabel = $"Comparing {compare.OriginalLabel} -- original {compare.Original.Width}x{compare.Original.Height}, " +
+                             $"mod {compare.Modded.Width}x{compare.Modded.Height}, canvas {_compareCanvasWidth}x{_compareCanvasHeight}";
+        UpdateCompareLabel();
 
         ImageComparePanel.IsVisible = true;
         ApplyImageCompareMode();
@@ -2651,46 +2690,128 @@ public partial class MainWindow : Window
         return Math.Clamp(centre - (width / 2), 0, maxLeft);
     }
 
+    private void UpdateDifferenceImage()
+    {
+        if (_compareOriginal is null || _compareMod is null || _compareCanvasWidth <= 0 || _compareCanvasHeight <= 0)
+            return;
+
+        int gain = (int)Math.Round(ImageCompareDiffGainSlider.Value);
+        DecodedImage diffImage = ImageDifference.ComputeDifference(
+            _compareOriginal,
+            _compareMod,
+            _compareCanvasWidth,
+            _compareCanvasHeight,
+            gain,
+            out _compareDiffPixelCount);
+
+        _compareDiffBitmap = PngWriter.ToBitmap(diffImage);
+        ImageCompareDifferenceImage.Source = _compareDiffBitmap;
+        UpdateCompareLabel();
+    }
+
+    private void UpdateCompareLabel()
+    {
+        if (_compareBaseLabel is null)
+            return;
+
+        if (CurrentCompareMode == ImageCompareMode.Difference)
+        {
+            long totalPixels = (long)_compareCanvasWidth * _compareCanvasHeight;
+            if (totalPixels > 0)
+            {
+                double pct = (double)_compareDiffPixelCount / totalPixels * 100.0;
+                if (_compareDiffPixelCount == 0)
+                    ImageCompareLabel.Text = $"{_compareBaseLabel} -- identical";
+                else
+                    ImageCompareLabel.Text = $"{_compareBaseLabel} -- {_compareDiffPixelCount:N0} differing pixels ({pct:0.0}%)";
+                return;
+            }
+        }
+        ImageCompareLabel.Text = _compareBaseLabel;
+    }
+
+    private ImageCompareMode CurrentCompareMode =>
+        ImageCompareSideBySideMode.IsChecked == true ? ImageCompareMode.SideBySide :
+        ImageCompareOnionSkinMode.IsChecked == true ? ImageCompareMode.OnionSkin :
+        ImageCompareDifferenceMode.IsChecked == true ? ImageCompareMode.Difference :
+        ImageCompareMode.Wipe;
+
     private void ApplyImageCompareMode()
     {
-        bool wipe = ImageCompareWipeMode.IsChecked == true;
-        ImageCompareWipeScroll.IsVisible = wipe;
-        ImageCompareSideBySideContainer.IsVisible = !wipe;
+        ImageCompareMode mode = CurrentCompareMode;
+        ImageCompareWipeScroll.IsVisible = mode == ImageCompareMode.Wipe;
+        ImageCompareSideBySideContainer.IsVisible = mode == ImageCompareMode.SideBySide;
+        ImageCompareOnionSkinScroll.IsVisible = mode == ImageCompareMode.OnionSkin;
+        ImageCompareDifferenceScroll.IsVisible = mode == ImageCompareMode.Difference;
+
+        ImageCompareOnionControls.IsVisible = mode == ImageCompareMode.OnionSkin;
+        ImageCompareDiffControls.IsVisible = mode == ImageCompareMode.Difference;
+
+        UpdateCompareLabel();
     }
 
     /// <summary>
-    /// Selects <paramref name="wipe"/>'s segment and clears the other. These are ToggleButtons in a
-    /// segmented picker rather than grouped RadioButtons, so the mutual exclusion is ours to enforce --
-    /// which is deliberate: a RadioButton raises <c>Checked</c> BEFORE the group unchecks its siblings,
-    /// so a handler that reads a sibling's <c>IsChecked</c> reads pre-change state. That is exactly what
-    /// used to make clicking "Side-by-side" appear to do nothing.
+    /// Selects the specified compare mode and unchecks the other segments in the picker.
     /// </summary>
-    private void SetImageCompareMode(bool wipe)
+    private void SetImageCompareMode(ImageCompareMode mode)
     {
-        ImageCompareWipeMode.IsChecked = wipe;
-        ImageCompareSideBySideMode.IsChecked = !wipe;
+        ImageCompareWipeMode.IsChecked = mode == ImageCompareMode.Wipe;
+        ImageCompareSideBySideMode.IsChecked = mode == ImageCompareMode.SideBySide;
+        ImageCompareOnionSkinMode.IsChecked = mode == ImageCompareMode.OnionSkin;
+        ImageCompareDifferenceMode.IsChecked = mode == ImageCompareMode.Difference;
     }
+
+    private void SetImageCompareMode(bool wipe) =>
+        SetImageCompareMode(wipe ? ImageCompareMode.Wipe : ImageCompareMode.SideBySide);
 
     private void ImageCompareMode_Changed(object? sender, RoutedEventArgs e)
     {
         // Drive the mode off which segment was clicked, never off the buttons' own toggle state: a click
         // on the already-active segment would otherwise un-toggle it and leave the picker with nothing
         // selected.
-        SetImageCompareMode(ReferenceEquals(sender, ImageCompareWipeMode));
+        ImageCompareMode mode;
+        if (ReferenceEquals(sender, ImageCompareWipeMode))
+            mode = ImageCompareMode.Wipe;
+        else if (ReferenceEquals(sender, ImageCompareSideBySideMode))
+            mode = ImageCompareMode.SideBySide;
+        else if (ReferenceEquals(sender, ImageCompareOnionSkinMode))
+            mode = ImageCompareMode.OnionSkin;
+        else if (ReferenceEquals(sender, ImageCompareDifferenceMode))
+            mode = ImageCompareMode.Difference;
+        else
+            return;
+
+        SetImageCompareMode(mode);
 
         if (!ImageComparePanel.IsVisible)
             return;
 
         ApplyImageCompareMode();
 
-        // Wipe and side-by-side show different ScrollViewers with different viewport sizes (side-by-side
-        // splits the width between two panes), so a zoom that was fit to the mode being left behind can
-        // leave the newly-shown one over/under-zoomed -- previously this only got fixed by closing and
-        // reopening the compare view, which re-ran the fit against whichever mode ended up visible. Only
-        // re-fit when the user hasn't manually zoomed/panned, same guard ImageCompareScroll_SizeChanged
-        // uses.
+        // Wipe, side-by-side, onion skin and difference show different ScrollViewers with different viewport
+        // sizes, so re-fit when the user hasn't manually zoomed/panned, same guard ImageCompareScroll_SizeChanged uses.
         if (_compareFitToWindow)
             ApplyCompareDefaultZoomWhenReady();
+    }
+
+    private void ImageCompareOnionSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (!_initialized)
+            return;
+
+        double val = e.NewValue;
+        ImageCompareOnionMod.Opacity = val / 100.0;
+        ImageCompareOnionLabel.Text = $"{val:0}%";
+    }
+
+    private void ImageCompareDiffGainSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (!_initialized)
+            return;
+
+        int gain = (int)Math.Round(e.NewValue);
+        ImageCompareDiffGainLabel.Text = $"{gain}x";
+        UpdateDifferenceImage();
     }
 
     // -------------------- Wipe drag (on the transparent divider handle overlay) --------------------
@@ -2811,6 +2932,10 @@ public partial class MainWindow : Window
         _imageCompareSideOriginalScale.ScaleY = _compareZoom;
         _imageCompareSideModScale.ScaleX = _compareZoom;
         _imageCompareSideModScale.ScaleY = _compareZoom;
+        _imageCompareOnionScale.ScaleX = _compareZoom;
+        _imageCompareOnionScale.ScaleY = _compareZoom;
+        _imageCompareDiffScale.ScaleX = _compareZoom;
+        _imageCompareDiffScale.ScaleY = _compareZoom;
         ImageCompareZoomLabel.Text = $"{_compareZoom * 100:0}%";
         _syncingCompareZoomSlider = true;
         try { ImageCompareZoomSlider.Value = _compareZoom * 100.0; }
@@ -2834,18 +2959,23 @@ public partial class MainWindow : Window
     }
     private void ImageCompareZoomReset_Click(object? sender, RoutedEventArgs e) => ApplyCompareDefaultZoomWhenReady();
 
+    private ScrollViewer GetActiveCompareScrollViewer() =>
+        ImageCompareWipeScroll.IsVisible ? ImageCompareWipeScroll :
+        ImageCompareSideOriginalScroll.IsVisible ? ImageCompareSideOriginalScroll :
+        ImageCompareOnionSkinScroll.IsVisible ? ImageCompareOnionSkinScroll :
+        ImageCompareDifferenceScroll;
+
     /// <summary>
     /// Default zoom for the compare view: fit the shared canvas inside whichever ScrollViewer is
-    /// currently visible (wipe or the first side-by-side pane), capped at 8x. Same rule as the main
-    /// image panel and the scene panel.
+    /// currently visible, capped at 8x. Same rule as the main image panel and the scene panel.
     /// </summary>
     private double ComputeCompareDefaultZoom()
     {
         if (_compareCanvasWidth <= 0 || _compareCanvasHeight <= 0)
             return 1.0;
 
-        // Prefer the currently-visible ScrollViewer for size probing so the fit works out in both modes.
-        ScrollViewer probe = ImageCompareWipeScroll.IsVisible ? ImageCompareWipeScroll : ImageCompareSideOriginalScroll;
+        // Prefer the currently-visible ScrollViewer for size probing so the fit works out across modes.
+        ScrollViewer probe = GetActiveCompareScrollViewer();
 
         double vpW = probe.Bounds.Width;
         double vpH = probe.Bounds.Height;
@@ -2863,7 +2993,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void ApplyCompareDefaultZoomWhenReady()
     {
-        ScrollViewer probe = ImageCompareWipeScroll.IsVisible ? ImageCompareWipeScroll : ImageCompareSideOriginalScroll;
+        ScrollViewer probe = GetActiveCompareScrollViewer();
 
         if (probe.Bounds.Width <= 0 || probe.Bounds.Height <= 0)
         {

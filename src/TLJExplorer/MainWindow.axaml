@@ -337,8 +337,30 @@
                                         <ToggleButton x:Name="ImageCompareSideBySideMode" Content="Side-by-side" Classes="divided"
                                                       Click="ImageCompareMode_Changed"
                                                       ToolTip.Tip="Show the original and the mod next to each other, with synchronised scrolling."/>
+                                        <ToggleButton x:Name="ImageCompareOnionSkinMode" Content="Onion skin" Classes="divided"
+                                                      Click="ImageCompareMode_Changed"
+                                                      ToolTip.Tip="Overlay both images with adjustable transparency."/>
+                                        <ToggleButton x:Name="ImageCompareDifferenceMode" Content="Difference" Classes="divided"
+                                                      Click="ImageCompareMode_Changed"
+                                                      ToolTip.Tip="Highlight pixel differences between the original and modded images."/>
                                     </StackPanel>
                                 </Border>
+                                <StackPanel x:Name="ImageCompareOnionControls" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0" IsVisible="False">
+                                    <TextBlock Text="Opacity" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,6,0"/>
+                                    <Slider x:Name="ImageCompareOnionSlider" Width="100" VerticalAlignment="Center"
+                                            Minimum="0" Maximum="100" Value="50"
+                                            SmallChange="5" LargeChange="10"
+                                            ValueChanged="ImageCompareOnionSlider_ValueChanged"/>
+                                    <TextBlock x:Name="ImageCompareOnionLabel" Text="50%" VerticalAlignment="Center" Opacity="0.75" Margin="6,0,0,0" MinWidth="34"/>
+                                </StackPanel>
+                                <StackPanel x:Name="ImageCompareDiffControls" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,14,0" IsVisible="False">
+                                    <TextBlock Text="Gain" VerticalAlignment="Center" Opacity="0.75" Margin="0,0,6,0"/>
+                                    <Slider x:Name="ImageCompareDiffGainSlider" Width="90" VerticalAlignment="Center"
+                                            Minimum="1" Maximum="10" Value="1"
+                                            SmallChange="1" LargeChange="2"
+                                            ValueChanged="ImageCompareDiffGainSlider_ValueChanged"/>
+                                    <TextBlock x:Name="ImageCompareDiffGainLabel" Text="1x" VerticalAlignment="Center" Opacity="0.75" Margin="6,0,0,0" MinWidth="24"/>
+                                </StackPanel>
                                 <Button Width="32" Height="28" Padding="0" Margin="0,0,6,0" Click="ImageCompareZoomReset_Click"
                                         Background="Transparent" BorderThickness="0" ToolTip.Tip="Fit to window">
                                     <Image Source="{StaticResource FitToWindowIcon}" Width="16" Height="16"/>
@@ -475,6 +497,48 @@
                                 </ScrollViewer>
                             </DockPanel>
                         </Grid>
+
+                        <!-- Onion skin: Original on bottom, Modded on top with adjustable opacity. -->
+                        <ScrollViewer x:Name="ImageCompareOnionSkinScroll"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      Cursor="Hand"
+                                      IsVisible="False"
+                                      SizeChanged="ImageCompareScroll_SizeChanged">
+                            <Grid MinWidth="{Binding #ImageCompareOnionSkinScroll.Viewport.Width}"
+                                  MinHeight="{Binding #ImageCompareOnionSkinScroll.Viewport.Height}">
+                                <LayoutTransformControl x:Name="ImageCompareOnionSkinTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <LayoutTransformControl.LayoutTransform>
+                                        <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                    </LayoutTransformControl.LayoutTransform>
+                                    <Grid x:Name="ImageCompareOnionSkinStage">
+                                        <Image x:Name="ImageCompareOnionOriginal" Stretch="Fill"
+                                               RenderOptions.BitmapInterpolationMode="None"/>
+                                        <Image x:Name="ImageCompareOnionMod" Stretch="Fill" Opacity="0.5"
+                                               RenderOptions.BitmapInterpolationMode="None"/>
+                                    </Grid>
+                                </LayoutTransformControl>
+                            </Grid>
+                        </ScrollViewer>
+
+                        <!-- Difference: Absolute pixel differences between original and modded. -->
+                        <ScrollViewer x:Name="ImageCompareDifferenceScroll"
+                                      HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                      Cursor="Hand"
+                                      IsVisible="False"
+                                      SizeChanged="ImageCompareScroll_SizeChanged">
+                            <Grid MinWidth="{Binding #ImageCompareDifferenceScroll.Viewport.Width}"
+                                  MinHeight="{Binding #ImageCompareDifferenceScroll.Viewport.Height}">
+                                <LayoutTransformControl x:Name="ImageCompareDifferenceTransformHost" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <LayoutTransformControl.LayoutTransform>
+                                        <ScaleTransform ScaleX="1" ScaleY="1"/>
+                                    </LayoutTransformControl.LayoutTransform>
+                                    <Grid x:Name="ImageCompareDifferenceStage">
+                                        <Image x:Name="ImageCompareDifferenceImage" Stretch="Fill"
+                                               RenderOptions.BitmapInterpolationMode="None"/>
+                                    </Grid>
+                                </LayoutTransformControl>
+                            </Grid>
+                        </ScrollViewer>
                     </Grid>
                 </Grid>
 
