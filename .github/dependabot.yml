@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Check for NuGet dependency updates monthly
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+
+  # Check for GitHub Actions updates monthly
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5

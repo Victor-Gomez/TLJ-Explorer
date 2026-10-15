@@ -1,10 +1,26 @@
 # TLJ Explorer
 
+[![CI](https://github.com/Victor-Gomez/TLJ-Explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/Victor-Gomez/TLJ-Explorer/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Victor-Gomez/TLJ-Explorer?label=release)](https://github.com/Victor-Gomez/TLJ-Explorer/releases/latest)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey.svg)](#download)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A cross-platform viewer for the game assets of **The Longest Journey** (2000). Browse a TLJ install like a
 file tree and preview its images, textures, sounds, videos, 3D models and animations, XRC resource
 trees, and static composites of individual rooms.
 
 ![TLJ Explorer screenshot](docs/screenshot.avif)
+
+## Download
+
+Pre-built, self-contained standalone binaries for **Windows (x64)** and **Linux (x64)** are available on the **[Releases](https://github.com/Victor-Gomez/TLJ-Explorer/releases/latest)** page. No .NET runtime installation is required.
+
+1. Download and extract the archive for your operating system (`TLJExplorer-v*-win-x64.zip` or `TLJExplorer-v*-linux-x64.tar.gz`).
+2. Launch `TLJExplorer.exe` (Windows) or `./TLJExplorer` (Linux).
+3. Select your *The Longest Journey* installation directory (via **File → Open Folder** or by simply dragging and dropping the folder onto the application window).
+
+*(Optional)* For animated room overlays and Smacker/Bink video decoding, place a static `ffmpeg` executable into an `ffmpeg/` subfolder next to the binary, or configure its path under **Options → Settings → External Tools**.
 
 ## Features
 
@@ -105,3 +121,7 @@ None of this would exist without the reverse-engineering work of two prior effor
 Thanks to both projects and everyone who has contributed to them.
 
 The UI icons are from **[Lucide](https://lucide.dev)** (ISC licensed).
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
