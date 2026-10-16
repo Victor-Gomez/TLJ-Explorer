@@ -43,5 +43,11 @@
     <ApplicationManifest Condition="$([MSBuild]::IsOSPlatform('Windows'))">app.manifest</ApplicationManifest>
   </PropertyGroup>
 
+  <!-- VideoLAN.LibVLC.Windows defaults to copying x86, x64, and arm64 when Platform is AnyCPU.
+       Disable x86 and arm64 so local builds and win-x64 releases don't package unused runtimes. -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
+    <VlcWindowsX86Enabled Condition="'$(RuntimeIdentifier)' != 'win-x86'">false</VlcWindowsX86Enabled>
+    <VlcWindowsArm64Enabled Condition="'$(RuntimeIdentifier)' != 'win-arm64'">false</VlcWindowsArm64Enabled>
+  </PropertyGroup>
 
 </Project>

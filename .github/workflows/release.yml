@@ -55,6 +55,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # Ensure unused architecture runtimes are never bundled
+          Remove-Item -Recurse -Force publish\libvlc\win-x86, publish\libvlc\win-arm64 -ErrorAction Ignore
           $zip = "TLJExplorer-${{ steps.tag.outputs.tag }}-${{ matrix.rid }}.zip"
           Compress-Archive -Path publish\* -DestinationPath $zip
 
