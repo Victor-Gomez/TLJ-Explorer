@@ -5,11 +5,22 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
+    groups:
+      avalonia:
+        patterns:
+          - "Avalonia*"
+    ignore:
+      - dependency-name: "Avalonia*"
+        update-types: ["version-update:semver-major"]
 
   # Check for GitHub Actions updates monthly
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 10
+    groups:
+      actions:
+        patterns:
+          - "*"
