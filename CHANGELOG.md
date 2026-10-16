@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.7] - 2026-10
+
+### Changed
+- **Packaging & Build Size**: Excluded unused x86 and arm64 LibVLC runtimes from Windows builds and releases, reducing the win-x64 release archive size by ~50% (~92 MB).
+- **Dependencies & CI**:
+  - Updated `actions/checkout` to `v7` and `actions/setup-dotnet` to `v6`.
+  - Updated `Microsoft.NET.Test.Sdk` to `18.11.0` and `xunit.runner.visualstudio` to `4.0.1`.
+  - Configured Dependabot grouped dependency updates.
+
 ## [1.2.6] - 2026-10
 
 ### Added
